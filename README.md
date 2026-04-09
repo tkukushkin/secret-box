@@ -1,5 +1,8 @@
 # secret-box
 
+[![Test](https://github.com/tkukushkin/secret-box/actions/workflows/test.yml/badge.svg)](https://github.com/tkukushkin/secret-box/actions/workflows/test.yml)
+[![codecov](https://codecov.io/gh/tkukushkin/secret-box/graph/badge.svg)](https://codecov.io/gh/tkukushkin/secret-box)
+
 A macOS CLI tool for secure secret storage with Touch ID authentication.
 
 ## Features
