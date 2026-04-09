@@ -1,11 +1,11 @@
 import Foundation
 import LocalAuthentication
 
-enum TouchIDError: Error, CustomStringConvertible {
+public enum TouchIDError: Error, CustomStringConvertible {
     case notAvailable(String)
     case authFailed(String)
 
-    var description: String {
+    public var description: String {
         switch self {
         case .notAvailable(let msg): return "Touch ID not available: \(msg)"
         case .authFailed(let msg): return msg
@@ -13,9 +13,14 @@ enum TouchIDError: Error, CustomStringConvertible {
     }
 }
 
-enum TouchID {
-    /// Authenticate via Touch ID. Blocks until the user responds.
-    static func authenticate(reason: String) throws {
+public protocol BiometricAuth {
+    func authenticate(reason: String) throws
+}
+
+public struct SystemBiometricAuth: BiometricAuth {
+    public init() {}
+
+    public func authenticate(reason: String) throws {
         let context = LAContext()
 
         var error: NSError?

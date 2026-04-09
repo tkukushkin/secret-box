@@ -1,7 +1,7 @@
 import Foundation
 import Security
 
-private func getPathForPid(_ pid: pid_t) -> String? {
+func getPathForPid(_ pid: pid_t) -> String? {
     let pathbuf = UnsafeMutablePointer<CChar>.allocate(capacity: Int(4096))
     defer { pathbuf.deallocate() }
     let ret = proc_pidpath(pid, pathbuf, UInt32(4096))
@@ -9,7 +9,7 @@ private func getPathForPid(_ pid: pid_t) -> String? {
     return String(cString: pathbuf)
 }
 
-private func getParentPid(of pid: pid_t) -> pid_t {
+func getParentPid(of pid: pid_t) -> pid_t {
     var info = kinfo_proc()
     var length = MemoryLayout<kinfo_proc>.size
     var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
@@ -17,7 +17,7 @@ private func getParentPid(of pid: pid_t) -> pid_t {
     return info.kp_eproc.e_ppid
 }
 
-private func extractAppBundle(from path: String) -> String? {
+func extractAppBundle(from path: String) -> String? {
     if let range = path.range(of: ".app/") {
         return String(path[..<range.lowerBound]) + ".app"
     }
@@ -28,7 +28,7 @@ private func extractAppBundle(from path: String) -> String? {
 }
 
 /// Walk up the process tree to find the responsible .app bundle.
-private func findResponsibleAppPath() -> String? {
+func findResponsibleAppPath() -> String? {
     var pid = getppid()
 
     while pid > 1 {
@@ -42,7 +42,7 @@ private func findResponsibleAppPath() -> String? {
     return getPathForPid(getppid())
 }
 
-private func getSigningIdentity(for path: String) -> String? {
+func getSigningIdentity(for path: String) -> String? {
     let url = URL(fileURLWithPath: path)
     var staticCode: SecStaticCode?
     guard SecStaticCodeCreateWithPath(url as CFURL, [], &staticCode) == errSecSuccess,
@@ -64,11 +64,16 @@ private func getSigningIdentity(for path: String) -> String? {
     return nil
 }
 
-struct CallerIdentity {
-    let id: String
-    let displayName: String
+public struct CallerIdentity {
+    public let id: String
+    public let displayName: String
 
-    static func current() -> CallerIdentity {
+    public init(id: String, displayName: String) {
+        self.id = id
+        self.displayName = displayName
+    }
+
+    public static func current() -> CallerIdentity {
         let appPath = findResponsibleAppPath()
 
         let displayName: String

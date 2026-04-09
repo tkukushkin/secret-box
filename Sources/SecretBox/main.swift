@@ -1,5 +1,17 @@
 import ArgumentParser
 import Foundation
+import SecretBoxLib
+
+// Production dependencies
+private let defaultBaseDir = FileManager.default.urls(
+    for: .applicationSupportDirectory, in: .userDomainMask
+).first!.appendingPathComponent("secret-box")
+
+private let database = SecretDatabase(baseDir: defaultBaseDir)
+private let keychain = SystemKeychain()
+private let store = SecretStore(db: database, keychain: keychain)
+private let cache = AuthCache(db: database, authKeyProvider: store.authKey)
+private let biometric: BiometricAuth = SystemBiometricAuth()
 
 struct SecretBox: ParsableCommand {
     static let configuration = CommandConfiguration(
@@ -37,8 +49,8 @@ extension SecretBox {
                     throw ValidationError("no value provided (pass as argument or pipe to stdin)")
                 }
             }
-            try SecretStore.write(name: name, data: data)
-            AuthCache.invalidate(secretName: name)
+            try store.write(name: name, data: data)
+            cache.invalidate(secretName: name)
             print("Secret saved.")
         }
     }
@@ -55,23 +67,23 @@ extension SecretBox {
         var once = false
 
         mutating func run() throws {
-            guard SecretStore.exists(name: name) else {
+            guard store.exists(name: name) else {
                 fputs("Error: secret not found\n", stderr)
                 throw ExitCode.failure
             }
 
             let caller = CallerIdentity.current()
 
-            if !AuthCache.isValid(for: caller.id, secretName: name) {
-                try TouchID.authenticate(
+            if !cache.isValid(for: caller.id, secretName: name) {
+                try biometric.authenticate(
                     reason: "\"\(caller.displayName)\" wants to access \"\(name)\""
                 )
                 if !once {
-                    AuthCache.update(for: caller.id, secretName: name)
+                    cache.update(for: caller.id, secretName: name)
                 }
             }
 
-            let data = try SecretStore.read(name: name)
+            let data = try store.read(name: name)
             FileHandle.standardOutput.write(data)
         }
     }
@@ -82,7 +94,7 @@ extension SecretBox {
         )
 
         mutating func run() {
-            for name in SecretStore.list() {
+            for name in store.list() {
                 print(name)
             }
         }
@@ -98,13 +110,13 @@ extension SecretBox {
 
         mutating func run() {
             for name in names {
-                if !SecretStore.exists(name: name) {
+                if !store.exists(name: name) {
                     print("\(name): not found")
                     continue
                 }
                 do {
-                    try SecretStore.delete(name: name)
-                    AuthCache.invalidate(secretName: name)
+                    try store.delete(name: name)
+                    cache.invalidate(secretName: name)
                     print("\(name): deleted")
                 } catch {
                     fputs("\(name): \(error)\n", stderr)
@@ -112,6 +124,7 @@ extension SecretBox {
             }
         }
     }
+
     struct Reset: ParsableCommand {
         static let configuration = CommandConfiguration(
             abstract: "Delete all secrets, auth cache, and the master key."
@@ -130,7 +143,7 @@ extension SecretBox {
                 }
             }
 
-            try SecretStore.resetAll()
+            try store.resetAll()
             print("All data has been removed.")
         }
     }
@@ -180,7 +193,7 @@ extension SecretBox {
 
             // Verify all secrets exist
             for (_, secretName) in mappings {
-                guard SecretStore.exists(name: secretName) else {
+                guard store.exists(name: secretName) else {
                     fputs("Error: secret '\(secretName)' not found\n", stderr)
                     throw ExitCode.failure
                 }
@@ -190,23 +203,23 @@ extension SecretBox {
             let caller = CallerIdentity.current()
             let uncachedSecrets = mappings
                 .map { $0.secretName }
-                .filter { !AuthCache.isValid(for: caller.id, secretName: $0) }
+                .filter { !cache.isValid(for: caller.id, secretName: $0) }
 
             // Single Touch ID prompt for all uncached secrets
             if !uncachedSecrets.isEmpty {
                 let quoted = uncachedSecrets.map { "\"\($0)\"" }.joined(separator: ", ")
-                try TouchID.authenticate(
+                try biometric.authenticate(
                     reason: "\"\(caller.displayName)\" wants to access \(quoted)"
                 )
                 for secretName in uncachedSecrets {
-                    AuthCache.update(for: caller.id, secretName: secretName)
+                    cache.update(for: caller.id, secretName: secretName)
                 }
             }
 
             // Read secrets and set env vars
             var resolved = [String: String]()
             for (varName, secretName) in mappings {
-                let data = try SecretStore.read(name: secretName)
+                let data = try store.read(name: secretName)
                 guard let value = String(data: data, encoding: .utf8) else {
                     fputs("Error: secret '\(secretName)' is not valid UTF-8\n", stderr)
                     throw ExitCode.failure
@@ -216,13 +229,7 @@ extension SecretBox {
             }
 
             // Substitute $(VAR) in command arguments
-            let expandedCommand = command.map { arg in
-                var result = arg
-                for (varName, value) in resolved {
-                    result = result.replacingOccurrences(of: "$(\(varName))", with: value)
-                }
-                return result
-            }
+            let expandedCommand = expandVariables(in: command, with: resolved)
 
             // execvp
             let argv = expandedCommand.map { strdup($0) } + [nil]

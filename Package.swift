@@ -9,17 +9,32 @@ let package = Package(
         .package(url: "https://github.com/stephencelis/SQLite.swift.git", from: "0.16.0"),
     ],
     targets: [
-        .executableTarget(
-            name: "secret-box",
+        .target(
+            name: "SecretBoxLib",
             dependencies: [
-                .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .product(name: "SQLite", package: "SQLite.swift"),
             ],
-            path: "Sources/SecretBox",
+            path: "Sources/SecretBoxLib",
             linkerSettings: [
                 .linkedFramework("LocalAuthentication"),
                 .linkedFramework("Security"),
             ]
+        ),
+        .executableTarget(
+            name: "secret-box",
+            dependencies: [
+                "SecretBoxLib",
+                .product(name: "ArgumentParser", package: "swift-argument-parser"),
+            ],
+            path: "Sources/SecretBox"
+        ),
+        .testTarget(
+            name: "SecretBoxTests",
+            dependencies: [
+                "SecretBoxLib",
+                .product(name: "SQLite", package: "SQLite.swift"),
+            ],
+            path: "Tests/SecretBoxTests"
         ),
     ]
 )

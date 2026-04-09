@@ -1,10 +1,15 @@
 import Foundation
 import SQLite
 
-enum Database {
-    private static var _connection: Connection?
+public class SecretDatabase {
+    private var _connection: Connection?
+    public let baseDir: URL
 
-    static var connection: Connection {
+    public init(baseDir: URL) {
+        self.baseDir = baseDir
+    }
+
+    public var connection: Connection {
         get throws {
             if let conn = _connection { return conn }
             let conn = try setup()
@@ -13,16 +18,11 @@ enum Database {
         }
     }
 
-    /// Close the connection (used before deleting the DB file in resetAll).
-    static func closeConnection() {
+    public func closeConnection() {
         _connection = nil
     }
 
-    private static func setup() throws -> Connection {
-        let baseDir = FileManager.default.urls(
-            for: .applicationSupportDirectory, in: .userDomainMask
-        ).first!.appendingPathComponent("secret-box")
-
+    private func setup() throws -> Connection {
         if !FileManager.default.fileExists(atPath: baseDir.path) {
             try FileManager.default.createDirectory(
                 at: baseDir, withIntermediateDirectories: true
@@ -35,7 +35,6 @@ enum Database {
         let dbPath = baseDir.appendingPathComponent("db.sqlite3").path
         let conn = try Connection(dbPath)
 
-        // Set restrictive file permissions
         try FileManager.default.setAttributes(
             [.posixPermissions: 0o600], ofItemAtPath: dbPath
         )
