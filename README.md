@@ -14,6 +14,13 @@ A macOS CLI tool for secure secret storage with Touch ID authentication.
 ## Installation
 
 ```bash
+curl -fsSL https://github.com/tkukushkin/secret-box/releases/latest/download/secret-box -o /usr/local/bin/secret-box
+chmod +x /usr/local/bin/secret-box
+```
+
+### Build from source
+
+```bash
 swift build -c release
 cp .build/release/secret-box /usr/local/bin/
 ```
