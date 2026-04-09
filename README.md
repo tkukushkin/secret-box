@@ -17,15 +17,21 @@ A macOS CLI tool for secure secret storage with Touch ID authentication.
 ## Installation
 
 ```bash
-curl -fsSL https://github.com/tkukushkin/secret-box/releases/latest/download/secret-box -o /usr/local/bin/secret-box
-chmod +x /usr/local/bin/secret-box
+curl -fsSL https://github.com/tkukushkin/secret-box/releases/latest/download/secret-box -o ~/.local/bin/secret-box
+chmod +x ~/.local/bin/secret-box
+```
+
+### Install with Go
+
+```bash
+go install github.com/tkukushkin/secret-box@latest
 ```
 
 ### Build from source
 
 ```bash
-swift build -c release
-cp .build/release/secret-box /usr/local/bin/
+go build -o secret-box
+cp secret-box ~/.local/bin/
 ```
 
 ## Usage
@@ -96,7 +102,7 @@ secret-box exec -e DB_PASSWORD=db-pass -e API_KEY=api-key -- myapp
 
 - macOS 13+
 - Touch ID
-- Swift 5.9+
+- Go 1.23+
 
 ## License
 

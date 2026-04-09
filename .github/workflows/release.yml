@@ -12,18 +12,26 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Build (arm64)
-        run: swift build -c release --arch arm64
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
 
-      - name: Build (x86_64)
-        run: swift build -c release --arch x86_64
+      - name: Build (arm64)
+        env:
+          GOARCH: arm64
+          CGO_ENABLED: "1"
+        run: go build -o secret-box-arm64
+
+      - name: Build (amd64)
+        env:
+          GOARCH: amd64
+          CGO_ENABLED: "1"
+        run: go build -o secret-box-amd64
 
       - name: Create universal binary
         run: |
-          lipo -create \
-            .build/arm64-apple-macosx/release/secret-box \
-            .build/x86_64-apple-macosx/release/secret-box \
-            -output secret-box
+          lipo -create secret-box-arm64 secret-box-amd64 -output secret-box
           chmod +x secret-box
 
       - name: Upload binary to release

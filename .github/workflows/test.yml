@@ -12,21 +12,16 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Test
-        run: swift test --enable-code-coverage
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
 
-      - name: Export coverage
-        run: |
-          BIN=$(swift build --show-bin-path)
-          PROFILE=$(find .build -name 'default.profdata' -print -quit)
-          xcrun llvm-cov export \
-            "$BIN/secret-boxPackageTests.xctest/Contents/MacOS/secret-boxPackageTests" \
-            -instr-profile "$PROFILE" \
-            -format lcov \
-            > coverage.lcov
+      - name: Test
+        run: go test -v -coverprofile=coverage.out ./...
 
       - name: Upload coverage
         uses: codecov/codecov-action@v5
         with:
-          files: coverage.lcov
+          files: coverage.out
           token: ${{ secrets.CODECOV_TOKEN }}
