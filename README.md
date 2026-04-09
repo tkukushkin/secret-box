@@ -4,45 +4,76 @@ A macOS CLI tool for secure secret storage with Touch ID authentication.
 
 ## Features
 
-- Reading a secret requires Touch ID confirmation
-- Authorization is granted per-app per-secret and cached for 10 minutes
-- Binary data supported via stdin
+- **Touch ID protection** — reading a secret requires biometric confirmation
+- **Per-app authorization** — access is granted per-app per-secret and cached for 10 minutes
+- **AES-256-GCM encryption** — all secrets encrypted at rest
+- **macOS Keychain integration** — master key stored in the system keychain
+- **Binary data support** — store any data via stdin
+- **Environment variable injection** — run commands with secrets as env vars
 
 ## Installation
 
-```
+```bash
 swift build -c release
 cp .build/release/secret-box /usr/local/bin/
 ```
 
 ## Usage
 
+### Save a secret
+
+```bash
+secret-box write my-secret "some value"
 ```
-# Save a secret
-secret-box write my-secret "some-value"
 
-# Save from stdin (text or binary data)
-echo -n "some-value" | secret-box write my-secret
+From stdin (text or binary):
+
+```bash
+echo -n "some value" | secret-box write my-secret
 cat cert.pem | secret-box write my-cert
+```
 
-# Read a secret (Touch ID required)
+### Read a secret
+
+```bash
+# Touch ID required
 secret-box read my-secret
 
-# Read without caching the session
+# Authenticate but don't cache the session
 secret-box read --once my-secret
 
 # Output to a file
 secret-box read my-cert > cert.pem
+```
 
-# List secrets
+### List secrets
+
+```bash
 secret-box list
+```
 
-# Delete secrets
+### Delete secrets
+
+```bash
 secret-box delete my-secret my-cert
+```
 
-# Delete all data and the master key
+### Reset all data
+
+```bash
+# Delete all secrets, auth cache, and the master key
 secret-box reset
-secret-box reset --yes  # skip confirmation
+
+# Skip confirmation
+secret-box reset --yes
+```
+
+### Run a command with secrets
+
+```bash
+secret-box exec -e DB_PASSWORD=db-pass -- psql
+secret-box exec -e DB_PASSWORD=db-pass -- psql '--password=$(DB_PASSWORD)'
+secret-box exec -e DB_PASSWORD=db-pass -e API_KEY=api-key -- myapp
 ```
 
 ## Data storage
@@ -56,3 +87,7 @@ secret-box reset --yes  # skip confirmation
 - macOS 13+
 - Touch ID
 - Swift 5.9+
+
+## License
+
+[MIT](LICENSE)
