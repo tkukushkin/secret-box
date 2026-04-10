@@ -44,11 +44,13 @@ func (m *MockBiometricAuth) Authenticate(reason string) error {
 
 // TestEnvironment bundles all test dependencies.
 type TestEnvironment struct {
-	Store    *SecretStore
-	Cache    *AuthCache
-	DB       *SecretDatabase
-	Keychain *MockKeychain
-	TmpDir   string
+	Store     *SecretStore
+	Cache     *AuthCache
+	DB        *SecretDatabase
+	Keychain  *MockKeychain
+	Biometric *MockBiometricAuth
+	Ops       *Operations
+	TmpDir    string
 }
 
 func makeTestEnvironment(t *testing.T, opts ...interface{}) *TestEnvironment {
@@ -65,12 +67,23 @@ func makeTestEnvironment(t *testing.T, opts ...interface{}) *TestEnvironment {
 		}
 	}
 	cache := NewAuthCache(db, store.AuthKey, cacheOpts...)
+	bio := &MockBiometricAuth{ShouldSucceed: true}
+	ops := &Operations{
+		Store:     store,
+		Cache:     cache,
+		Biometric: bio,
+		GetCaller: func() CallerIdentity {
+			return CallerIdentity{ID: "test-caller", DisplayName: "TestApp"}
+		},
+	}
 
 	return &TestEnvironment{
-		Store:    store,
-		Cache:    cache,
-		DB:       db,
-		Keychain: keychain,
-		TmpDir:   tmpDir,
+		Store:     store,
+		Cache:     cache,
+		DB:        db,
+		Keychain:  keychain,
+		Biometric: bio,
+		Ops:       ops,
+		TmpDir:    tmpDir,
 	}
 }

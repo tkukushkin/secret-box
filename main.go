@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -20,7 +21,12 @@ var (
 	keychain       = secretbox.SystemKeychain{}
 	store          = secretbox.NewSecretStore(database, keychain)
 	cache          = secretbox.NewAuthCache(database, store.AuthKey)
-	biometric      secretbox.BiometricAuth = secretbox.SystemBiometricAuth{}
+	ops            = &secretbox.Operations{
+		Store:     store,
+		Cache:     cache,
+		Biometric: secretbox.SystemBiometricAuth{},
+		GetCaller: secretbox.CurrentCallerIdentity,
+	}
 )
 
 func userApplicationSupportDir() string {
@@ -76,10 +82,9 @@ Examples:
 					return fmt.Errorf("no value provided (pass as argument or pipe to stdin)")
 				}
 			}
-			if err := store.Write(name, data); err != nil {
+			if err := ops.WriteSecret(name, data); err != nil {
 				return err
 			}
-			cache.Invalidate(name)
 			fmt.Println("Secret saved.")
 			return nil
 		},
@@ -94,26 +99,7 @@ func readCmd() *cobra.Command {
 		Short: "Read a secret (Touch ID required).",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			name := args[0]
-
-			if !store.Exists(name) {
-				fmt.Fprintln(os.Stderr, "Error: secret not found")
-				os.Exit(1)
-			}
-
-			caller := secretbox.CurrentCallerIdentity()
-
-			if !cache.IsValid(caller.ID, name) {
-				reason := fmt.Sprintf(`"%s" wants to access "%s"`, caller.DisplayName, name)
-				if err := biometric.Authenticate(reason); err != nil {
-					return err
-				}
-				if !once {
-					cache.Update(caller.ID, name)
-				}
-			}
-
-			data, err := store.Read(name)
+			data, err := ops.ReadSecret(args[0], once)
 			if err != nil {
 				return err
 			}
@@ -131,7 +117,7 @@ func listCmd() *cobra.Command {
 		Short: "List secret names.",
 		Args:  cobra.NoArgs,
 		Run: func(cmd *cobra.Command, args []string) {
-			for _, name := range store.List() {
+			for _, name := range ops.ListSecrets() {
 				fmt.Println(name)
 			}
 		},
@@ -144,17 +130,16 @@ func deleteCmd() *cobra.Command {
 		Short: "Delete one or more secrets.",
 		Args:  cobra.MinimumNArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
-			for _, name := range args {
-				if !store.Exists(name) {
-					fmt.Printf("%s: not found\n", name)
-					continue
+			for _, r := range ops.DeleteSecrets(args) {
+				if r.Error != nil {
+					if errors.Is(r.Error, secretbox.ErrSecretNotFound) {
+						fmt.Printf("%s: not found\n", r.Name)
+					} else {
+						fmt.Fprintf(os.Stderr, "%s: %s\n", r.Name, r.Error)
+					}
+				} else {
+					fmt.Printf("%s: deleted\n", r.Name)
 				}
-				if err := store.Delete(name); err != nil {
-					fmt.Fprintf(os.Stderr, "%s: %s\n", name, err)
-					continue
-				}
-				cache.Invalidate(name)
-				fmt.Printf("%s: deleted\n", name)
 			}
 		},
 	}
@@ -176,8 +161,7 @@ func resetCmd() *cobra.Command {
 					os.Exit(1)
 				}
 			}
-
-			if err := store.ResetAll(); err != nil {
+			if err := ops.ResetAll(); err != nil {
 				return err
 			}
 			fmt.Println("All data has been removed.")
@@ -205,87 +189,28 @@ Examples:
 		DisableFlagParsing: false,
 		Args:               cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Validate env mappings
-			if len(envMappings) == 0 {
-				return fmt.Errorf("at least one -e/--env mapping is required")
-			}
-
-			type mapping struct {
-				varName    string
-				secretName string
-			}
-			var mappings []mapping
-			for _, entry := range envMappings {
-				parts := strings.SplitN(entry, "=", 2)
-				if len(parts) != 2 {
-					return fmt.Errorf("invalid env mapping '%s': expected format ENV_VAR=secret-name", entry)
-				}
-				mappings = append(mappings, mapping{parts[0], parts[1]})
-			}
-
-			// Verify all secrets exist
-			for _, m := range mappings {
-				if !store.Exists(m.secretName) {
-					fmt.Fprintf(os.Stderr, "Error: secret '%s' not found\n", m.secretName)
-					os.Exit(1)
-				}
-			}
-
-			// Check auth cache, collect uncached secrets
-			caller := secretbox.CurrentCallerIdentity()
-			var uncachedSecrets []string
-			for _, m := range mappings {
-				if !cache.IsValid(caller.ID, m.secretName) {
-					uncachedSecrets = append(uncachedSecrets, m.secretName)
-				}
-			}
-
-			// Single Touch ID prompt for all uncached secrets
-			if len(uncachedSecrets) > 0 {
-				quoted := make([]string, len(uncachedSecrets))
-				for i, s := range uncachedSecrets {
-					quoted[i] = fmt.Sprintf(`"%s"`, s)
-				}
-				reason := fmt.Sprintf(`"%s" wants to access %s`, caller.DisplayName, strings.Join(quoted, ", "))
-				if err := biometric.Authenticate(reason); err != nil {
-					return err
-				}
-				for _, secretName := range uncachedSecrets {
-					cache.Update(caller.ID, secretName)
-				}
-			}
-
-			// Read secrets and set env vars
-			resolved := make(map[string]string)
-			for _, m := range mappings {
-				data, err := store.Read(m.secretName)
-				if err != nil {
-					return err
-				}
-				value := string(data)
-				// Check for valid UTF-8 (Go strings are UTF-8 by default, but raw bytes might not be)
-				for _, b := range data {
-					if b == 0 {
-						fmt.Fprintf(os.Stderr, "Error: secret '%s' is not valid UTF-8\n", m.secretName)
-						os.Exit(1)
-					}
-				}
-				resolved[m.varName] = value
-				os.Setenv(m.varName, value)
-			}
-
-			// Substitute $(VAR) in command arguments
-			expandedCommand := secretbox.ExpandVariables(args, resolved)
-
-			// execvp
-			binary, err := exec.LookPath(expandedCommand[0])
+			mappings, err := secretbox.ParseEnvMappings(envMappings)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error: exec '%s': %s\n", args[0], err)
+				return err
+			}
+
+			params, err := ops.PrepareExec(mappings, args)
+			if err != nil {
+				return err
+			}
+
+			for k, v := range params.Env {
+				os.Setenv(k, v)
+			}
+
+			binary, err := exec.LookPath(params.Command[0])
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: exec '%s': %s\n", params.Command[0], err)
 				os.Exit(127)
 			}
 
-			if err := syscall.Exec(binary, expandedCommand, os.Environ()); err != nil {
-				fmt.Fprintf(os.Stderr, "Error: exec '%s': %s\n", args[0], err)
+			if err := syscall.Exec(binary, params.Command, os.Environ()); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: exec '%s': %s\n", params.Command[0], err)
 				os.Exit(127)
 			}
 			return nil
