@@ -105,6 +105,16 @@ func (c *AuthCache) Invalidate(secretName string) {
 	_, _ = conn.Exec(`DELETE FROM auth_cache WHERE secret_name = ?`, secretName)
 }
 
+// InvalidateAll removes all entries from the auth cache.
+func (c *AuthCache) InvalidateAll() error {
+	conn, err := c.db.Connection()
+	if err != nil {
+		return err
+	}
+	_, err = conn.Exec(`DELETE FROM auth_cache`)
+	return err
+}
+
 // BuildMessage constructs the HMAC message for cache validation.
 // Format: timestamp (8 bytes LE) || caller_length (4 bytes BE) || caller_id || secret_name
 func BuildMessage(timestampData []byte, callerID, secretName string) []byte {

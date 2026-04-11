@@ -48,6 +48,7 @@ func main() {
 		listCmd(),
 		deleteCmd(),
 		resetCmd(),
+		clearAuthCacheCmd(),
 		execCmd(),
 	)
 
@@ -172,29 +173,40 @@ func resetCmd() *cobra.Command {
 	return cmd
 }
 
-func execCmd() *cobra.Command {
-	var envMappings []string
-	cmd := &cobra.Command{
-		Use:   "exec -e ENV_VAR=secret-name [...] -- command [args...]",
-		Short: "Run a command with secrets in environment variables.",
-		Long: `Run a command with secrets in environment variables.
+func clearAuthCacheCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "clear-auth-cache",
+		Short: "Clear the authentication cache.",
+		Long:  `Clear the authentication cache. All secrets will require Touch ID on next access.`,
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := ops.ClearAuthCache(); err != nil {
+				return err
+			}
+			fmt.Println("Auth cache cleared.")
+			return nil
+		},
+	}
+}
 
-Secrets are set as environment variables. Use $(VAR) in command
-arguments to substitute the secret value inline.
+func execCmd() *cobra.Command {
+	var once bool
+	cmd := &cobra.Command{
+		Use:   "exec -- command [args...]",
+		Short: "Run a command with secrets injected from environment variables.",
+		Long: `Run a command with secrets injected from environment variables.
+
+Environment variables and command arguments containing $(secret-name)
+references are resolved and replaced with actual secret values.
 
 Examples:
-  secret-box exec -e DB_PASSWORD=db-pass -- psql
-  secret-box exec -e DB_PASSWORD=db-pass -- psql '--password=$(DB_PASSWORD)'
-  secret-box exec -e DB_PASSWORD=db-pass -e API_KEY=api-key -- myapp`,
+  API_KEY='$(api-key)' secret-box exec -- myapp
+  DB_PASSWORD='$(db-pass)' secret-box exec -- psql '--password=$(db-pass)'
+  DB_PASSWORD='$(db-pass)' API_KEY='$(api-key)' secret-box exec -- myapp`,
 		DisableFlagParsing: false,
 		Args:               cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			mappings, err := secretbox.ParseEnvMappings(envMappings)
-			if err != nil {
-				return err
-			}
-
-			params, err := ops.PrepareExec(mappings, args)
+			params, err := ops.PrepareExec(os.Environ(), args, once)
 			if err != nil {
 				return err
 			}
@@ -216,6 +228,6 @@ Examples:
 			return nil
 		},
 	}
-	cmd.Flags().StringArrayVarP(&envMappings, "env", "e", nil, "Map secret to env var (format: ENV_VAR=secret-name).")
+	cmd.Flags().BoolVar(&once, "once", false, "Authenticate with Touch ID but don't cache the session.")
 	return cmd
 }

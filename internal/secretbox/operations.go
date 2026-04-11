@@ -78,26 +78,9 @@ func (o *Operations) ResetAll() error {
 	return o.Store.ResetAll()
 }
 
-// EnvMapping maps an environment variable name to a secret name.
-type EnvMapping struct {
-	VarName    string
-	SecretName string
-}
-
-// ParseEnvMappings parses "ENV_VAR=secret-name" strings into EnvMapping values.
-func ParseEnvMappings(entries []string) ([]EnvMapping, error) {
-	if len(entries) == 0 {
-		return nil, fmt.Errorf("at least one env mapping is required")
-	}
-	mappings := make([]EnvMapping, len(entries))
-	for i, entry := range entries {
-		parts := strings.SplitN(entry, "=", 2)
-		if len(parts) != 2 {
-			return nil, fmt.Errorf("invalid env mapping '%s': expected format ENV_VAR=secret-name", entry)
-		}
-		mappings[i] = EnvMapping{VarName: parts[0], SecretName: parts[1]}
-	}
-	return mappings, nil
+// ClearAuthCache removes all auth cache entries.
+func (o *Operations) ClearAuthCache() error {
+	return o.Cache.InvalidateAll()
 }
 
 // ExecParams holds the prepared parameters for exec.
@@ -106,22 +89,43 @@ type ExecParams struct {
 	Command []string
 }
 
-// PrepareExec reads secrets, handles authentication, and prepares environment
-// variables and command arguments for exec.
-func (o *Operations) PrepareExec(mappings []EnvMapping, command []string) (*ExecParams, error) {
+// PrepareExec scans environ and command for $(secret-name) references,
+// resolves the secrets (authenticating via biometrics if needed),
+// and returns the modified environment variables and expanded command.
+func (o *Operations) PrepareExec(environ []string, command []string, once bool) (*ExecParams, error) {
+	// Parse environment into keys and values
+	envKeys := make([]string, 0, len(environ))
+	envValues := make([]string, 0, len(environ))
+	for _, entry := range environ {
+		if k, v, ok := strings.Cut(entry, "="); ok {
+			envKeys = append(envKeys, k)
+			envValues = append(envValues, v)
+		}
+	}
+
+	// Find all $(secret-name) references in env values and command args
+	allStrings := make([]string, 0, len(envValues)+len(command))
+	allStrings = append(allStrings, envValues...)
+	allStrings = append(allStrings, command...)
+	secretNames := FindSecretRefs(allStrings)
+
+	if len(secretNames) == 0 {
+		return nil, fmt.Errorf("no secret references found (use $(secret-name) syntax in environment variables or command arguments)")
+	}
+
 	// Verify all secrets exist
-	for _, m := range mappings {
-		if !o.Store.Exists(m.SecretName) {
-			return nil, fmt.Errorf("secret '%s' not found", m.SecretName)
+	for _, name := range secretNames {
+		if !o.Store.Exists(name) {
+			return nil, fmt.Errorf("secret '%s' not found", name)
 		}
 	}
 
 	// Check auth cache, collect uncached secrets
 	caller := o.GetCaller()
 	var uncachedSecrets []string
-	for _, m := range mappings {
-		if !o.Cache.IsValid(caller.ID, m.SecretName) {
-			uncachedSecrets = append(uncachedSecrets, m.SecretName)
+	for _, name := range secretNames {
+		if !o.Cache.IsValid(caller.ID, name) {
+			uncachedSecrets = append(uncachedSecrets, name)
 		}
 	}
 
@@ -135,31 +139,42 @@ func (o *Operations) PrepareExec(mappings []EnvMapping, command []string) (*Exec
 		if err := o.Biometric.Authenticate(reason); err != nil {
 			return nil, err
 		}
-		for _, secretName := range uncachedSecrets {
-			o.Cache.Update(caller.ID, secretName)
+		if !once {
+			for _, secretName := range uncachedSecrets {
+				o.Cache.Update(caller.ID, secretName)
+			}
 		}
 	}
 
 	// Read secrets
-	resolved := make(map[string]string)
-	for _, m := range mappings {
-		data, err := o.Store.Read(m.SecretName)
+	secrets := make(map[string]string)
+	for _, name := range secretNames {
+		data, err := o.Store.Read(name)
 		if err != nil {
 			return nil, err
 		}
 		for _, b := range data {
 			if b == 0 {
-				return nil, fmt.Errorf("secret '%s' contains null bytes and cannot be used as environment variable", m.SecretName)
+				return nil, fmt.Errorf("secret '%s' contains null bytes and cannot be used as environment variable", name)
 			}
 		}
-		resolved[m.VarName] = string(data)
+		secrets[name] = string(data)
 	}
 
-	// Expand variables in command arguments
-	expandedCommand := ExpandVariables(command, resolved)
+	// Expand secret references in env values, collect only modified vars
+	expandedValues := ExpandVariables(envValues, secrets)
+	env := make(map[string]string)
+	for i, val := range expandedValues {
+		if val != envValues[i] {
+			env[envKeys[i]] = val
+		}
+	}
+
+	// Expand secret references in command args
+	expandedCommand := ExpandVariables(command, secrets)
 
 	return &ExecParams{
-		Env:     resolved,
+		Env:     env,
 		Command: expandedCommand,
 	}, nil
 }

@@ -213,58 +213,35 @@ func TestResetAll(t *testing.T) {
 	}
 }
 
-func TestParseEnvMappings(t *testing.T) {
-	t.Run("valid", func(t *testing.T) {
-		mappings, err := ParseEnvMappings([]string{"DB_PASS=db-password", "API_KEY=api-key"})
-		if err != nil {
-			t.Fatalf("error: %v", err)
-		}
-		if len(mappings) != 2 {
-			t.Fatalf("got %d mappings, want 2", len(mappings))
-		}
-		if mappings[0].VarName != "DB_PASS" || mappings[0].SecretName != "db-password" {
-			t.Errorf("mappings[0] = %+v", mappings[0])
-		}
-		if mappings[1].VarName != "API_KEY" || mappings[1].SecretName != "api-key" {
-			t.Errorf("mappings[1] = %+v", mappings[1])
-		}
-	})
+func TestClearAuthCache(t *testing.T) {
+	env := makeTestEnvironment(t)
 
-	t.Run("value with equals", func(t *testing.T) {
-		mappings, err := ParseEnvMappings([]string{"VAR=name=with=equals"})
-		if err != nil {
-			t.Fatalf("error: %v", err)
-		}
-		if mappings[0].SecretName != "name=with=equals" {
-			t.Errorf("SecretName = %q, want %q", mappings[0].SecretName, "name=with=equals")
-		}
-	})
+	env.Cache.Update("caller-A", "secret-1")
+	env.Cache.Update("caller-B", "secret-2")
 
-	t.Run("empty", func(t *testing.T) {
-		_, err := ParseEnvMappings(nil)
-		if err == nil {
-			t.Fatal("expected error for empty entries")
-		}
-	})
+	if err := env.Ops.ClearAuthCache(); err != nil {
+		t.Fatalf("ClearAuthCache error: %v", err)
+	}
 
-	t.Run("invalid format", func(t *testing.T) {
-		_, err := ParseEnvMappings([]string{"no-equals"})
-		if err == nil {
-			t.Fatal("expected error for invalid format")
-		}
-	})
+	if env.Cache.IsValid("caller-A", "secret-1") {
+		t.Error("caller-A/secret-1 should not be cached after reset")
+	}
+	if env.Cache.IsValid("caller-B", "secret-2") {
+		t.Error("caller-B/secret-2 should not be cached after reset")
+	}
 }
 
 func TestPrepareExec(t *testing.T) {
-	t.Run("success", func(t *testing.T) {
+	t.Run("env var substitution", func(t *testing.T) {
 		env := makeTestEnvironment(t)
 		if err := env.Store.Write("db-pass", []byte("s3cret")); err != nil {
 			t.Fatalf("Write error: %v", err)
 		}
 
 		params, err := env.Ops.PrepareExec(
-			[]EnvMapping{{VarName: "DB_PASS", SecretName: "db-pass"}},
-			[]string{"psql", "--password=$(DB_PASS)"},
+			[]string{"DB_PASS=$(db-pass)", "OTHER=unchanged"},
+			[]string{"psql"},
+			false,
 		)
 		if err != nil {
 			t.Fatalf("PrepareExec error: %v", err)
@@ -273,11 +250,54 @@ func TestPrepareExec(t *testing.T) {
 		if params.Env["DB_PASS"] != "s3cret" {
 			t.Errorf("Env[DB_PASS] = %q, want %q", params.Env["DB_PASS"], "s3cret")
 		}
-		if len(params.Command) != 2 || params.Command[1] != "--password=s3cret" {
-			t.Errorf("Command = %v, want [psql --password=s3cret]", params.Command)
+		if _, ok := params.Env["OTHER"]; ok {
+			t.Error("OTHER should not be in Env (not modified)")
 		}
 		if !env.Biometric.AuthenticateCalled {
 			t.Error("biometric should have been called")
+		}
+	})
+
+	t.Run("command arg substitution", func(t *testing.T) {
+		env := makeTestEnvironment(t)
+		if err := env.Store.Write("db-pass", []byte("s3cret")); err != nil {
+			t.Fatalf("Write error: %v", err)
+		}
+
+		params, err := env.Ops.PrepareExec(
+			[]string{"OTHER=foo"},
+			[]string{"psql", "--password=$(db-pass)"},
+			false,
+		)
+		if err != nil {
+			t.Fatalf("PrepareExec error: %v", err)
+		}
+
+		if len(params.Command) != 2 || params.Command[1] != "--password=s3cret" {
+			t.Errorf("Command = %v, want [psql --password=s3cret]", params.Command)
+		}
+	})
+
+	t.Run("both env and command", func(t *testing.T) {
+		env := makeTestEnvironment(t)
+		if err := env.Store.Write("db-pass", []byte("s3cret")); err != nil {
+			t.Fatalf("Write error: %v", err)
+		}
+
+		params, err := env.Ops.PrepareExec(
+			[]string{"DB_PASS=$(db-pass)"},
+			[]string{"psql", "--password=$(db-pass)"},
+			false,
+		)
+		if err != nil {
+			t.Fatalf("PrepareExec error: %v", err)
+		}
+
+		if params.Env["DB_PASS"] != "s3cret" {
+			t.Errorf("Env[DB_PASS] = %q, want %q", params.Env["DB_PASS"], "s3cret")
+		}
+		if params.Command[1] != "--password=s3cret" {
+			t.Errorf("Command[1] = %q, want %q", params.Command[1], "--password=s3cret")
 		}
 	})
 
@@ -285,11 +305,25 @@ func TestPrepareExec(t *testing.T) {
 		env := makeTestEnvironment(t)
 
 		_, err := env.Ops.PrepareExec(
-			[]EnvMapping{{VarName: "X", SecretName: "missing"}},
+			[]string{"X=$(missing)"},
 			[]string{"cmd"},
+			false,
 		)
 		if err == nil {
 			t.Fatal("expected error for missing secret")
+		}
+	})
+
+	t.Run("no secret refs", func(t *testing.T) {
+		env := makeTestEnvironment(t)
+
+		_, err := env.Ops.PrepareExec(
+			[]string{"X=plain-value"},
+			[]string{"cmd"},
+			false,
+		)
+		if err == nil {
+			t.Fatal("expected error when no secret references found")
 		}
 	})
 
@@ -301,8 +335,9 @@ func TestPrepareExec(t *testing.T) {
 		env.Cache.Update("test-caller", "key")
 
 		params, err := env.Ops.PrepareExec(
-			[]EnvMapping{{VarName: "K", SecretName: "key"}},
+			[]string{"K=$(key)"},
 			[]string{"cmd"},
+			false,
 		)
 		if err != nil {
 			t.Fatalf("PrepareExec error: %v", err)
@@ -323,8 +358,9 @@ func TestPrepareExec(t *testing.T) {
 		}
 
 		_, err := env.Ops.PrepareExec(
-			[]EnvMapping{{VarName: "K", SecretName: "key"}},
+			[]string{"K=$(key)"},
 			[]string{"cmd"},
+			false,
 		)
 		if err == nil {
 			t.Fatal("expected error when biometric fails")
@@ -338,8 +374,9 @@ func TestPrepareExec(t *testing.T) {
 		}
 
 		_, err := env.Ops.PrepareExec(
-			[]EnvMapping{{VarName: "B", SecretName: "bin"}},
+			[]string{"B=$(bin)"},
 			[]string{"cmd"},
+			false,
 		)
 		if err == nil {
 			t.Fatal("expected error for null bytes")
@@ -358,11 +395,9 @@ func TestPrepareExec(t *testing.T) {
 		env.Cache.Update("test-caller", "s1")
 
 		params, err := env.Ops.PrepareExec(
-			[]EnvMapping{
-				{VarName: "A", SecretName: "s1"},
-				{VarName: "B", SecretName: "s2"},
-			},
+			[]string{"A=$(s1)", "B=$(s2)"},
 			[]string{"cmd"},
+			false,
 		)
 		if err != nil {
 			t.Fatalf("PrepareExec error: %v", err)
@@ -372,6 +407,53 @@ func TestPrepareExec(t *testing.T) {
 		}
 		if params.Env["A"] != "v1" || params.Env["B"] != "v2" {
 			t.Errorf("Env = %v", params.Env)
+		}
+	})
+
+	t.Run("once skips cache", func(t *testing.T) {
+		env := makeTestEnvironment(t)
+		if err := env.Store.Write("key", []byte("val")); err != nil {
+			t.Fatalf("Write error: %v", err)
+		}
+
+		params, err := env.Ops.PrepareExec(
+			[]string{"K=$(key)"},
+			[]string{"cmd"},
+			true,
+		)
+		if err != nil {
+			t.Fatalf("PrepareExec error: %v", err)
+		}
+		if !env.Biometric.AuthenticateCalled {
+			t.Error("biometric should have been called")
+		}
+		if params.Env["K"] != "val" {
+			t.Errorf("Env[K] = %q, want %q", params.Env["K"], "val")
+		}
+		if env.Cache.IsValid("test-caller", "key") {
+			t.Error("cache should not be valid with once=true")
+		}
+	})
+
+	t.Run("multiple refs in one value", func(t *testing.T) {
+		env := makeTestEnvironment(t)
+		if err := env.Store.Write("user", []byte("admin")); err != nil {
+			t.Fatalf("Write error: %v", err)
+		}
+		if err := env.Store.Write("pass", []byte("s3cret")); err != nil {
+			t.Fatalf("Write error: %v", err)
+		}
+
+		params, err := env.Ops.PrepareExec(
+			[]string{"DSN=$(user):$(pass)@localhost"},
+			[]string{"cmd"},
+			false,
+		)
+		if err != nil {
+			t.Fatalf("PrepareExec error: %v", err)
+		}
+		if params.Env["DSN"] != "admin:s3cret@localhost" {
+			t.Errorf("Env[DSN] = %q, want %q", params.Env["DSN"], "admin:s3cret@localhost")
 		}
 	})
 }

@@ -2,8 +2,57 @@ package secretbox
 
 import (
 	"reflect"
+	"sort"
 	"testing"
 )
+
+func TestFindSecretRefs_Single(t *testing.T) {
+	refs := FindSecretRefs([]string{"$(my-secret)"})
+	expected := []string{"my-secret"}
+	if !reflect.DeepEqual(refs, expected) {
+		t.Errorf("got %v, want %v", refs, expected)
+	}
+}
+
+func TestFindSecretRefs_Multiple(t *testing.T) {
+	refs := FindSecretRefs([]string{"$(a)", "$(b)", "prefix-$(c)-suffix"})
+	sort.Strings(refs)
+	expected := []string{"a", "b", "c"}
+	if !reflect.DeepEqual(refs, expected) {
+		t.Errorf("got %v, want %v", refs, expected)
+	}
+}
+
+func TestFindSecretRefs_Dedup(t *testing.T) {
+	refs := FindSecretRefs([]string{"$(same)", "$(same)", "$(same)"})
+	expected := []string{"same"}
+	if !reflect.DeepEqual(refs, expected) {
+		t.Errorf("got %v, want %v", refs, expected)
+	}
+}
+
+func TestFindSecretRefs_MultipleInOneString(t *testing.T) {
+	refs := FindSecretRefs([]string{"$(user):$(pass)"})
+	sort.Strings(refs)
+	expected := []string{"pass", "user"}
+	if !reflect.DeepEqual(refs, expected) {
+		t.Errorf("got %v, want %v", refs, expected)
+	}
+}
+
+func TestFindSecretRefs_None(t *testing.T) {
+	refs := FindSecretRefs([]string{"no refs here", "plain"})
+	if len(refs) != 0 {
+		t.Errorf("expected empty, got %v", refs)
+	}
+}
+
+func TestFindSecretRefs_Empty(t *testing.T) {
+	refs := FindSecretRefs([]string{})
+	if len(refs) != 0 {
+		t.Errorf("expected empty, got %v", refs)
+	}
+}
 
 func TestExpand_SingleVar(t *testing.T) {
 	result := ExpandVariables(

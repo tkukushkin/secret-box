@@ -86,10 +86,14 @@ secret-box reset --yes
 
 ### Run a command with secrets
 
+Environment variables and command arguments containing `$(secret-name)` references
+are resolved and replaced with actual secret values.
+
 ```bash
-secret-box exec -e DB_PASSWORD=db-pass -- psql
-secret-box exec -e DB_PASSWORD=db-pass -- psql '--password=$(DB_PASSWORD)'
-secret-box exec -e DB_PASSWORD=db-pass -e API_KEY=api-key -- myapp
+DB_PASSWORD='$(db-pass)' secret-box exec -- psql
+DB_PASSWORD='$(db-pass)' secret-box exec -- psql '--password=$(db-pass)'
+DB_PASSWORD='$(db-pass)' API_KEY='$(api-key)' secret-box exec -- myapp
+DATABASE_URL='postgres://$(db-user):$(db-pass)@localhost/mydb' secret-box exec -- myapp
 ```
 
 ## Data storage
