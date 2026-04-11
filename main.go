@@ -15,6 +15,8 @@ import (
 	"github.com/tkukushkin/secret-box/internal/secretbox"
 )
 
+var version = "dev"
+
 var (
 	defaultBaseDir = filepath.Join(userApplicationSupportDir(), "secret-box")
 	database       = secretbox.NewSecretDatabase(defaultBaseDir)
@@ -43,6 +45,7 @@ func main() {
 	rootCmd.SilenceUsage = true
 
 	rootCmd.AddCommand(
+		versionCmd(),
 		writeCmd(),
 		readCmd(),
 		listCmd(),
@@ -54,6 +57,17 @@ func main() {
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
+	}
+}
+
+func versionCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "version",
+		Short: "Print the version.",
+		Args:  cobra.NoArgs,
+		Run: func(cmd *cobra.Command, args []string) {
+			fmt.Println(version)
+		},
 	}
 }
 
