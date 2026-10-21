@@ -8,7 +8,7 @@ A macOS CLI tool for secure secret storage with Touch ID authentication.
 ## Features
 
 - **Touch ID protection** — reading a secret requires biometric confirmation
-- **Per-app authorization** — access is granted per-app per-secret and cached for 10 minutes
+- **Per-app authorization** — access is granted per-app per-secret and cached for 10 minutes (configurable with `--duration`)
 - **AES-256-GCM encryption** — all secrets encrypted at rest
 - **macOS Keychain integration** — master key stored in the system keychain
 - **Binary data support** — store any data via stdin
@@ -58,6 +58,9 @@ secret-box read my-secret
 # Authenticate but don't cache the session
 secret-box read --once my-secret
 
+# Keep the authorization for 1 hour instead of the default 10 minutes
+secret-box read --duration 1h my-secret
+
 # Output to a file
 secret-box read my-cert > cert.pem
 ```
@@ -95,6 +98,16 @@ DB_PASSWORD='$(db-pass)' secret-box exec -- psql '--password=$(db-pass)'
 DB_PASSWORD='$(db-pass)' API_KEY='$(api-key)' secret-box exec -- myapp
 DATABASE_URL='postgres://$(db-user):$(db-pass)@localhost/mydb' secret-box exec -- myapp
 ```
+
+`exec` accepts the same `--once` and `--duration` flags as `read`:
+
+```bash
+DB_PASSWORD='$(db-pass)' secret-box exec --duration 8h -- psql
+```
+
+`--duration` takes whole seconds (`30s`, `5m`, `1h`) and applies only when Touch ID is actually prompted: if a cached authorization
+is still valid, it keeps its original expiry. Run `secret-box clear-auth-cache` to re-authenticate
+with a different duration.
 
 ## Data storage
 

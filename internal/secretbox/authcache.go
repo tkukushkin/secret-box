@@ -5,21 +5,16 @@ import (
 	"time"
 )
 
-const DefaultCacheDuration int64 = 600
+const DefaultAuthDuration = 10 * time.Minute
 
 // AuthCache provides per-app, per-secret authentication caching with HMAC integrity.
 type AuthCache struct {
 	db              *SecretDatabase
 	authKeyProvider func() ([]byte, error)
-	cacheDuration   int64
 	TimeProvider    func() int64
 }
 
 type CacheOption func(*AuthCache)
-
-func WithCacheDuration(d int64) CacheOption {
-	return func(c *AuthCache) { c.cacheDuration = d }
-}
 
 func WithTimeProvider(tp func() int64) CacheOption {
 	return func(c *AuthCache) { c.TimeProvider = tp }
@@ -29,7 +24,6 @@ func NewAuthCache(db *SecretDatabase, authKeyProvider func() ([]byte, error), op
 	c := &AuthCache{
 		db:              db,
 		authKeyProvider: authKeyProvider,
-		cacheDuration:   DefaultCacheDuration,
 		TimeProvider:    func() int64 { return time.Now().Unix() },
 	}
 	for _, opt := range opts {
@@ -49,31 +43,29 @@ func (c *AuthCache) IsValid(callerID, secretName string) bool {
 		return false
 	}
 
-	var timestamp int64
+	var timestamp, expiresAt int64
 	var storedHMAC []byte
 	err = conn.QueryRow(
-		`SELECT timestamp, hmac FROM auth_cache WHERE secret_name = ? AND caller_id = ?`,
+		`SELECT timestamp, expires_at, hmac FROM auth_cache WHERE secret_name = ? AND caller_id = ?`,
 		secretName, callerID,
-	).Scan(&timestamp, &storedHMAC)
+	).Scan(&timestamp, &expiresAt, &storedHMAC)
 	if err != nil {
 		return false
 	}
 
 	now := c.TimeProvider()
-	if now-timestamp > c.cacheDuration || timestamp > now {
+	if now > expiresAt || timestamp > now {
 		return false
 	}
 
-	timestampData := make([]byte, 8)
-	binary.LittleEndian.PutUint64(timestampData, uint64(timestamp))
-
-	message := BuildMessage(timestampData, callerID, secretName)
+	message := BuildMessage(timestamp, expiresAt, callerID, secretName)
 	expectedHMAC := HMACSHA256(key, message)
 
 	return ConstantTimeEqual(expectedHMAC, storedHMAC)
 }
 
-func (c *AuthCache) Update(callerID, secretName string) {
+// Update records a successful authentication that stays valid for the given duration.
+func (c *AuthCache) Update(callerID, secretName string, duration time.Duration) {
 	key, err := c.authKeyProvider()
 	if err != nil {
 		return
@@ -85,15 +77,14 @@ func (c *AuthCache) Update(callerID, secretName string) {
 	}
 
 	timestamp := c.TimeProvider()
-	timestampData := make([]byte, 8)
-	binary.LittleEndian.PutUint64(timestampData, uint64(timestamp))
+	expiresAt := timestamp + int64(duration/time.Second)
 
-	message := BuildMessage(timestampData, callerID, secretName)
+	message := BuildMessage(timestamp, expiresAt, callerID, secretName)
 	hmacValue := HMACSHA256(key, message)
 
 	_, _ = conn.Exec(
-		`INSERT OR REPLACE INTO auth_cache (secret_name, caller_id, timestamp, hmac) VALUES (?, ?, ?, ?)`,
-		secretName, callerID, timestamp, hmacValue,
+		`INSERT OR REPLACE INTO auth_cache (secret_name, caller_id, timestamp, expires_at, hmac) VALUES (?, ?, ?, ?, ?)`,
+		secretName, callerID, timestamp, expiresAt, hmacValue,
 	)
 }
 
@@ -116,17 +107,15 @@ func (c *AuthCache) InvalidateAll() error {
 }
 
 // BuildMessage constructs the HMAC message for cache validation.
-// Format: timestamp (8 bytes LE) || caller_length (4 bytes BE) || caller_id || secret_name
-func BuildMessage(timestampData []byte, callerID, secretName string) []byte {
+// Format: timestamp (8 bytes LE) || expires_at (8 bytes LE) || caller_length (4 bytes BE) || caller_id || secret_name
+func BuildMessage(timestamp, expiresAt int64, callerID, secretName string) []byte {
 	callerData := []byte(callerID)
 	nameData := []byte(secretName)
 
-	callerLen := make([]byte, 4)
-	binary.BigEndian.PutUint32(callerLen, uint32(len(callerData)))
-
-	message := make([]byte, 0, len(timestampData)+4+len(callerData)+len(nameData))
-	message = append(message, timestampData...)
-	message = append(message, callerLen...)
+	message := make([]byte, 0, 8+8+4+len(callerData)+len(nameData))
+	message = binary.LittleEndian.AppendUint64(message, uint64(timestamp))
+	message = binary.LittleEndian.AppendUint64(message, uint64(expiresAt))
+	message = binary.BigEndian.AppendUint32(message, uint32(len(callerData)))
 	message = append(message, callerData...)
 	message = append(message, nameData...)
 

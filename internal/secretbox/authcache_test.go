@@ -3,11 +3,12 @@ package secretbox
 import (
 	"bytes"
 	"testing"
+	"time"
 )
 
 func TestAuthCache_UpdateThenValid(t *testing.T) {
 	env := makeTestEnvironment(t)
-	env.Cache.Update("caller-1", "secret-1")
+	env.Cache.Update("caller-1", "secret-1", DefaultAuthDuration)
 	if !env.Cache.IsValid("caller-1", "secret-1") {
 		t.Error("cache should be valid after update")
 	}
@@ -26,11 +27,10 @@ func TestAuthCache_NonExistent(t *testing.T) {
 func TestAuthCache_Expired(t *testing.T) {
 	var currentTime int64 = 1000
 	env := makeTestEnvironment(t,
-		WithCacheDuration(600),
 		WithTimeProvider(func() int64 { return currentTime }),
 	)
 
-	env.Cache.Update("caller-1", "secret-1")
+	env.Cache.Update("caller-1", "secret-1", 600*time.Second)
 	if !env.Cache.IsValid("caller-1", "secret-1") {
 		t.Error("cache should be valid immediately after update")
 	}
@@ -44,11 +44,10 @@ func TestAuthCache_Expired(t *testing.T) {
 func TestAuthCache_AtExactDuration(t *testing.T) {
 	var currentTime int64 = 1000
 	env := makeTestEnvironment(t,
-		WithCacheDuration(600),
 		WithTimeProvider(func() int64 { return currentTime }),
 	)
 
-	env.Cache.Update("caller-1", "secret-1")
+	env.Cache.Update("caller-1", "secret-1", 600*time.Second)
 
 	currentTime = 1600
 	if !env.Cache.IsValid("caller-1", "secret-1") {
@@ -58,7 +57,7 @@ func TestAuthCache_AtExactDuration(t *testing.T) {
 
 func TestAuthCache_DifferentCallers(t *testing.T) {
 	env := makeTestEnvironment(t)
-	env.Cache.Update("caller-A", "secret-1")
+	env.Cache.Update("caller-A", "secret-1", DefaultAuthDuration)
 
 	if !env.Cache.IsValid("caller-A", "secret-1") {
 		t.Error("caller-A should be valid")
@@ -70,7 +69,7 @@ func TestAuthCache_DifferentCallers(t *testing.T) {
 
 func TestAuthCache_DifferentSecrets(t *testing.T) {
 	env := makeTestEnvironment(t)
-	env.Cache.Update("caller-1", "secret-A")
+	env.Cache.Update("caller-1", "secret-A", DefaultAuthDuration)
 
 	if !env.Cache.IsValid("caller-1", "secret-A") {
 		t.Error("secret-A should be valid")
@@ -82,8 +81,8 @@ func TestAuthCache_DifferentSecrets(t *testing.T) {
 
 func TestAuthCache_Invalidate(t *testing.T) {
 	env := makeTestEnvironment(t)
-	env.Cache.Update("caller-1", "secret-1")
-	env.Cache.Update("caller-2", "secret-1")
+	env.Cache.Update("caller-1", "secret-1", DefaultAuthDuration)
+	env.Cache.Update("caller-2", "secret-1", DefaultAuthDuration)
 
 	env.Cache.Invalidate("secret-1")
 
@@ -97,8 +96,8 @@ func TestAuthCache_Invalidate(t *testing.T) {
 
 func TestAuthCache_InvalidateIsolated(t *testing.T) {
 	env := makeTestEnvironment(t)
-	env.Cache.Update("caller-1", "secret-1")
-	env.Cache.Update("caller-1", "secret-2")
+	env.Cache.Update("caller-1", "secret-1", DefaultAuthDuration)
+	env.Cache.Update("caller-1", "secret-2", DefaultAuthDuration)
 
 	env.Cache.Invalidate("secret-1")
 
@@ -113,11 +112,10 @@ func TestAuthCache_InvalidateIsolated(t *testing.T) {
 func TestAuthCache_UpdateRefreshes(t *testing.T) {
 	var currentTime int64 = 1000
 	env := makeTestEnvironment(t,
-		WithCacheDuration(600),
 		WithTimeProvider(func() int64 { return currentTime }),
 	)
 
-	env.Cache.Update("caller-1", "secret-1")
+	env.Cache.Update("caller-1", "secret-1", 600*time.Second)
 
 	currentTime = 1500
 	if !env.Cache.IsValid("caller-1", "secret-1") {
@@ -125,7 +123,7 @@ func TestAuthCache_UpdateRefreshes(t *testing.T) {
 	}
 
 	// Refresh the cache
-	env.Cache.Update("caller-1", "secret-1")
+	env.Cache.Update("caller-1", "secret-1", 600*time.Second)
 
 	// Past original expiry but within new window
 	currentTime = 2000
@@ -137,11 +135,10 @@ func TestAuthCache_UpdateRefreshes(t *testing.T) {
 func TestAuthCache_FutureTimestamp(t *testing.T) {
 	var currentTime int64 = 2000
 	env := makeTestEnvironment(t,
-		WithCacheDuration(600),
 		WithTimeProvider(func() int64 { return currentTime }),
 	)
 
-	env.Cache.Update("caller-1", "secret-1")
+	env.Cache.Update("caller-1", "secret-1", 600*time.Second)
 
 	// Time goes backwards (clock skew)
 	currentTime = 1999
@@ -150,26 +147,70 @@ func TestAuthCache_FutureTimestamp(t *testing.T) {
 	}
 }
 
+func TestAuthCache_PerEntryDuration(t *testing.T) {
+	var currentTime int64 = 1000
+	env := makeTestEnvironment(t,
+		WithTimeProvider(func() int64 { return currentTime }),
+	)
+
+	env.Cache.Update("caller-1", "short", 60*time.Second)
+	env.Cache.Update("caller-1", "long", time.Hour)
+
+	currentTime = 1061
+	if env.Cache.IsValid("caller-1", "short") {
+		t.Error("short entry should be expired")
+	}
+	if !env.Cache.IsValid("caller-1", "long") {
+		t.Error("long entry should still be valid")
+	}
+}
+
+func TestAuthCache_TamperedExpiry(t *testing.T) {
+	var currentTime int64 = 1000
+	env := makeTestEnvironment(t,
+		WithTimeProvider(func() int64 { return currentTime }),
+	)
+
+	env.Cache.Update("caller-1", "secret-1", 60*time.Second)
+
+	conn, err := env.DB.Connection()
+	if err != nil {
+		t.Fatalf("Connection error: %v", err)
+	}
+	if _, err := conn.Exec(`UPDATE auth_cache SET expires_at = expires_at + 3600`); err != nil {
+		t.Fatalf("Exec error: %v", err)
+	}
+
+	if env.Cache.IsValid("caller-1", "secret-1") {
+		t.Error("entry with tampered expires_at should be rejected")
+	}
+}
+
 func TestAuthCache_BuildMessageDeterministic(t *testing.T) {
-	ts := bytes.Repeat([]byte{0x01}, 8)
-	msg1 := BuildMessage(ts, "caller", "secret")
-	msg2 := BuildMessage(ts, "caller", "secret")
+	msg1 := BuildMessage(1, 2, "caller", "secret")
+	msg2 := BuildMessage(1, 2, "caller", "secret")
 	if !bytes.Equal(msg1, msg2) {
 		t.Error("BuildMessage should be deterministic")
 	}
 }
 
 func TestAuthCache_BuildMessageFormat(t *testing.T) {
-	ts := make([]byte, 8)
-	msg := BuildMessage(ts, "AB", "XY")
+	msg := BuildMessage(1, 2, "AB", "XY")
 
-	// 8 bytes timestamp + 4 bytes caller length + 2 bytes "AB" + 2 bytes "XY" = 16
-	if len(msg) != 16 {
-		t.Errorf("message length = %d, want 16", len(msg))
+	// 8 bytes timestamp + 8 bytes expires_at + 4 bytes caller length + 2 bytes "AB" + 2 bytes "XY" = 24
+	if len(msg) != 24 {
+		t.Errorf("message length = %d, want 24", len(msg))
+	}
+
+	if !bytes.Equal(msg[0:8], []byte{1, 0, 0, 0, 0, 0, 0, 0}) {
+		t.Errorf("timestamp bytes = %v", msg[0:8])
+	}
+	if !bytes.Equal(msg[8:16], []byte{2, 0, 0, 0, 0, 0, 0, 0}) {
+		t.Errorf("expires_at bytes = %v", msg[8:16])
 	}
 
 	// Caller length should be 2 in big endian
-	callerLen := msg[8:12]
+	callerLen := msg[16:20]
 	expected := []byte{0, 0, 0, 2}
 	if !bytes.Equal(callerLen, expected) {
 		t.Errorf("caller length bytes = %v, want %v", callerLen, expected)
@@ -177,9 +218,8 @@ func TestAuthCache_BuildMessageFormat(t *testing.T) {
 }
 
 func TestAuthCache_BuildMessageDifferentCallers(t *testing.T) {
-	ts := make([]byte, 8)
-	msg1 := BuildMessage(ts, "AB", "XY")
-	msg2 := BuildMessage(ts, "A", "BXY")
+	msg1 := BuildMessage(0, 0, "AB", "XY")
+	msg2 := BuildMessage(0, 0, "A", "BXY")
 	if bytes.Equal(msg1, msg2) {
 		t.Error("messages with different caller/secret split should differ")
 	}

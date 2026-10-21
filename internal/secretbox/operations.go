@@ -3,6 +3,7 @@ package secretbox
 import (
 	"fmt"
 	"strings"
+	"time"
 )
 
 // Operations provides high-level secret management operations.
@@ -23,8 +24,8 @@ func (o *Operations) WriteSecret(name string, data []byte) error {
 }
 
 // ReadSecret reads a secret, authenticating via biometrics if not cached.
-// If once is true, successful authentication is not cached.
-func (o *Operations) ReadSecret(name string, once bool) ([]byte, error) {
+// A successful authentication is cached for authDuration; zero disables caching.
+func (o *Operations) ReadSecret(name string, authDuration time.Duration) ([]byte, error) {
 	if !o.Store.Exists(name) {
 		return nil, ErrSecretNotFound
 	}
@@ -36,8 +37,8 @@ func (o *Operations) ReadSecret(name string, once bool) ([]byte, error) {
 		if err := o.Biometric.Authenticate(reason); err != nil {
 			return nil, err
 		}
-		if !once {
-			o.Cache.Update(caller.ID, name)
+		if authDuration > 0 {
+			o.Cache.Update(caller.ID, name, authDuration)
 		}
 	}
 
@@ -92,7 +93,8 @@ type ExecParams struct {
 // PrepareExec scans environ and command for $(secret-name) references,
 // resolves the secrets (authenticating via biometrics if needed),
 // and returns the modified environment variables and expanded command.
-func (o *Operations) PrepareExec(environ []string, command []string, once bool) (*ExecParams, error) {
+// A successful authentication is cached for authDuration; zero disables caching.
+func (o *Operations) PrepareExec(environ []string, command []string, authDuration time.Duration) (*ExecParams, error) {
 	// Parse environment into keys and values
 	envKeys := make([]string, 0, len(environ))
 	envValues := make([]string, 0, len(environ))
@@ -139,9 +141,9 @@ func (o *Operations) PrepareExec(environ []string, command []string, once bool) 
 		if err := o.Biometric.Authenticate(reason); err != nil {
 			return nil, err
 		}
-		if !once {
+		if authDuration > 0 {
 			for _, secretName := range uncachedSecrets {
-				o.Cache.Update(caller.ID, secretName)
+				o.Cache.Update(caller.ID, secretName, authDuration)
 			}
 		}
 	}

@@ -11,6 +11,7 @@ import (
 	"runtime/debug"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/tkukushkin/secret-box/internal/secretbox"
@@ -118,14 +119,42 @@ Examples:
 	return cmd
 }
 
-func readCmd() *cobra.Command {
+// authDurationFlags registers --once and --duration and returns a function resolving them
+// into the duration a successful Touch ID authentication is cached for.
+func authDurationFlags(cmd *cobra.Command) func() (time.Duration, error) {
 	var once bool
+	var duration time.Duration
+	cmd.Flags().BoolVar(&once, "once", false, "Authenticate with Touch ID but don't cache the session.")
+	cmd.Flags().DurationVar(&duration, "duration", secretbox.DefaultAuthDuration,
+		"How long a Touch ID authentication stays valid for this app and secret, in whole seconds (e.g. 30s, 5m, 1h).\n"+
+			"Applies only when Touch ID is prompted; a still-valid cached authentication keeps its own expiry.")
+	cmd.MarkFlagsMutuallyExclusive("once", "duration")
+	return func() (time.Duration, error) {
+		if once {
+			return 0, nil
+		}
+		if duration < 0 {
+			return 0, fmt.Errorf("--duration must not be negative")
+		}
+		if duration%time.Second != 0 {
+			return 0, fmt.Errorf("--duration must be a whole number of seconds")
+		}
+		return duration, nil
+	}
+}
+
+func readCmd() *cobra.Command {
+	var authDuration func() (time.Duration, error)
 	cmd := &cobra.Command{
 		Use:   "read <name>",
 		Short: "Read a secret (Touch ID required).",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			data, err := ops.ReadSecret(args[0], once)
+			duration, err := authDuration()
+			if err != nil {
+				return err
+			}
+			data, err := ops.ReadSecret(args[0], duration)
 			if err != nil {
 				return err
 			}
@@ -133,7 +162,7 @@ func readCmd() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().BoolVar(&once, "once", false, "Authenticate with Touch ID but don't cache the session.")
+	authDuration = authDurationFlags(cmd)
 	return cmd
 }
 
@@ -215,7 +244,7 @@ func clearAuthCacheCmd() *cobra.Command {
 }
 
 func execCmd() *cobra.Command {
-	var once bool
+	var authDuration func() (time.Duration, error)
 	cmd := &cobra.Command{
 		Use:   "exec -- command [args...]",
 		Short: "Run a command with secrets injected from environment variables.",
@@ -231,7 +260,11 @@ Examples:
 		DisableFlagParsing: false,
 		Args:               cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			params, err := ops.PrepareExec(os.Environ(), args, once)
+			duration, err := authDuration()
+			if err != nil {
+				return err
+			}
+			params, err := ops.PrepareExec(os.Environ(), args, duration)
 			if err != nil {
 				return err
 			}
@@ -253,6 +286,6 @@ Examples:
 			return nil
 		},
 	}
-	cmd.Flags().BoolVar(&once, "once", false, "Authenticate with Touch ID but don't cache the session.")
+	authDuration = authDurationFlags(cmd)
 	return cmd
 }

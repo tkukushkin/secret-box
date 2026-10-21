@@ -91,6 +91,7 @@ func (db *SecretDatabase) setup() (*sql.DB, error) {
 			secret_name TEXT NOT NULL,
 			caller_id TEXT NOT NULL,
 			timestamp INTEGER NOT NULL,
+			expires_at INTEGER NOT NULL DEFAULT 0,
 			hmac BLOB NOT NULL,
 			PRIMARY KEY (secret_name, caller_id)
 		)
@@ -99,5 +100,25 @@ func (db *SecretDatabase) setup() (*sql.DB, error) {
 		return nil, fmt.Errorf("failed to create auth_cache table: %w", err)
 	}
 
+	if err := migrateAuthCacheExpiresAt(conn); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("failed to migrate auth_cache table: %w", err)
+	}
+
 	return conn, nil
+}
+
+// migrateAuthCacheExpiresAt adds the expires_at column to auth_cache tables created before it existed.
+func migrateAuthCacheExpiresAt(conn *sql.DB) error {
+	var count int
+	if err := conn.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('auth_cache') WHERE name = 'expires_at'`,
+	).Scan(&count); err != nil {
+		return err
+	}
+	if count > 0 {
+		return nil
+	}
+	_, err := conn.Exec(`ALTER TABLE auth_cache ADD COLUMN expires_at INTEGER NOT NULL DEFAULT 0`)
+	return err
 }

@@ -3,6 +3,7 @@ package secretbox
 import (
 	"bytes"
 	"testing"
+	"time"
 )
 
 func TestIntegration_SecretLifecycle(t *testing.T) {
@@ -106,7 +107,7 @@ func TestIntegration_AuthCacheFlow(t *testing.T) {
 	}
 
 	// After update, cache is valid
-	env.Cache.Update(callerID, "secret-1")
+	env.Cache.Update(callerID, "secret-1", DefaultAuthDuration)
 	if !env.Cache.IsValid(callerID, "secret-1") {
 		t.Error("cache should be valid after update")
 	}
@@ -126,7 +127,7 @@ func TestIntegration_WriteInvalidatesCache(t *testing.T) {
 	if err := env.Store.Write("my-secret", []byte("old")); err != nil {
 		t.Fatalf("Write error: %v", err)
 	}
-	env.Cache.Update(callerID, "my-secret")
+	env.Cache.Update(callerID, "my-secret", DefaultAuthDuration)
 	if !env.Cache.IsValid(callerID, "my-secret") {
 		t.Error("cache should be valid")
 	}
@@ -158,7 +159,7 @@ func TestIntegration_ResetClearsAll(t *testing.T) {
 	if err := env.Store.Write("s2", []byte("v2")); err != nil {
 		t.Fatalf("Write error: %v", err)
 	}
-	env.Cache.Update("caller", "s1")
+	env.Cache.Update("caller", "s1", DefaultAuthDuration)
 
 	if err := env.Store.ResetAll(); err != nil {
 		t.Fatalf("ResetAll error: %v", err)
@@ -173,7 +174,6 @@ func TestIntegration_ResetClearsAll(t *testing.T) {
 func TestIntegration_CacheWithTime(t *testing.T) {
 	var currentTime int64 = 10_000
 	env := makeTestEnvironment(t,
-		WithCacheDuration(60),
 		WithTimeProvider(func() int64 { return currentTime }),
 	)
 
@@ -187,7 +187,7 @@ func TestIntegration_CacheWithTime(t *testing.T) {
 	}
 
 	// Authenticate and cache
-	env.Cache.Update("caller", "secret")
+	env.Cache.Update("caller", "secret", 60*time.Second)
 	if !env.Cache.IsValid("caller", "secret") {
 		t.Error("should be cached after update")
 	}
@@ -205,7 +205,7 @@ func TestIntegration_CacheWithTime(t *testing.T) {
 	}
 
 	// Re-authenticate
-	env.Cache.Update("caller", "secret")
+	env.Cache.Update("caller", "secret", 60*time.Second)
 	if !env.Cache.IsValid("caller", "secret") {
 		t.Error("should be valid after re-auth")
 	}
@@ -219,7 +219,7 @@ func TestIntegration_MultipleCallersSameSecret(t *testing.T) {
 	}
 
 	// Caller A authenticates
-	env.Cache.Update("caller-A", "shared-secret")
+	env.Cache.Update("caller-A", "shared-secret", DefaultAuthDuration)
 
 	if !env.Cache.IsValid("caller-A", "shared-secret") {
 		t.Error("caller-A should be cached")
@@ -229,7 +229,7 @@ func TestIntegration_MultipleCallersSameSecret(t *testing.T) {
 	}
 
 	// Caller B authenticates
-	env.Cache.Update("caller-B", "shared-secret")
+	env.Cache.Update("caller-B", "shared-secret", DefaultAuthDuration)
 
 	if !env.Cache.IsValid("caller-A", "shared-secret") {
 		t.Error("caller-A should still be cached")

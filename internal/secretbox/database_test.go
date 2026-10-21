@@ -1,6 +1,7 @@
 package secretbox
 
 import (
+	"database/sql"
 	"os"
 	"path/filepath"
 	"testing"
@@ -147,5 +148,52 @@ func TestDatabase_CreatesBaseDirectory(t *testing.T) {
 
 	if _, err := os.Stat(nestedDir); os.IsNotExist(err) {
 		t.Error("nested directory should be created")
+	}
+}
+
+func TestDatabase_MigratesAuthCacheWithoutExpiresAt(t *testing.T) {
+	tmpDir := t.TempDir()
+	legacy, err := sql.Open("sqlite3", filepath.Join(tmpDir, "db.sqlite3"))
+	if err != nil {
+		t.Fatalf("Open error: %v", err)
+	}
+	if _, err := legacy.Exec(`
+		CREATE TABLE auth_cache (
+			secret_name TEXT NOT NULL,
+			caller_id TEXT NOT NULL,
+			timestamp INTEGER NOT NULL,
+			hmac BLOB NOT NULL,
+			PRIMARY KEY (secret_name, caller_id)
+		)
+	`); err != nil {
+		t.Fatalf("Exec error: %v", err)
+	}
+	if _, err := legacy.Exec(
+		`INSERT INTO auth_cache (secret_name, caller_id, timestamp, hmac) VALUES ('s', 'c', 1, x'00')`,
+	); err != nil {
+		t.Fatalf("Exec error: %v", err)
+	}
+	legacy.Close()
+
+	db := NewSecretDatabase(tmpDir)
+	conn, err := db.Connection()
+	if err != nil {
+		t.Fatalf("Connection() error: %v", err)
+	}
+	defer db.CloseConnection()
+
+	var expiresAt int64
+	if err := conn.QueryRow(`SELECT expires_at FROM auth_cache WHERE secret_name = 's'`).Scan(&expiresAt); err != nil {
+		t.Fatalf("expires_at should exist after migration: %v", err)
+	}
+	if expiresAt != 0 {
+		t.Errorf("expires_at = %d, want 0 for legacy entries", expiresAt)
+	}
+
+	cache := NewAuthCache(db, NewSecretStore(db, NewMockKeychain()).AuthKey,
+		WithTimeProvider(func() int64 { return 1 }),
+	)
+	if cache.IsValid("c", "s") {
+		t.Error("legacy auth_cache entry should not be valid after migration")
 	}
 }

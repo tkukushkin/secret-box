@@ -3,6 +3,7 @@ package secretbox
 import (
 	"errors"
 	"testing"
+	"time"
 )
 
 func TestWriteSecret(t *testing.T) {
@@ -31,7 +32,7 @@ func TestWriteSecret_InvalidatesCache(t *testing.T) {
 	}
 
 	// Cache auth for this secret
-	env.Cache.Update("test-caller", "key")
+	env.Cache.Update("test-caller", "key", DefaultAuthDuration)
 	if !env.Cache.IsValid("test-caller", "key") {
 		t.Fatal("cache should be valid after Update")
 	}
@@ -48,7 +49,7 @@ func TestWriteSecret_InvalidatesCache(t *testing.T) {
 func TestReadSecret_NotFound(t *testing.T) {
 	env := makeTestEnvironment(t)
 
-	_, err := env.Ops.ReadSecret("missing", false)
+	_, err := env.Ops.ReadSecret("missing", DefaultAuthDuration)
 	if !errors.Is(err, ErrSecretNotFound) {
 		t.Errorf("expected ErrSecretNotFound, got %v", err)
 	}
@@ -64,7 +65,7 @@ func TestReadSecret_BiometricSuccess(t *testing.T) {
 		t.Fatalf("Write error: %v", err)
 	}
 
-	data, err := env.Ops.ReadSecret("key", false)
+	data, err := env.Ops.ReadSecret("key", DefaultAuthDuration)
 	if err != nil {
 		t.Fatalf("ReadSecret error: %v", err)
 	}
@@ -90,9 +91,9 @@ func TestReadSecret_Cached(t *testing.T) {
 	if err := env.Store.Write("key", []byte("value")); err != nil {
 		t.Fatalf("Write error: %v", err)
 	}
-	env.Cache.Update("test-caller", "key")
+	env.Cache.Update("test-caller", "key", DefaultAuthDuration)
 
-	data, err := env.Ops.ReadSecret("key", false)
+	data, err := env.Ops.ReadSecret("key", DefaultAuthDuration)
 	if err != nil {
 		t.Fatalf("ReadSecret error: %v", err)
 	}
@@ -104,14 +105,14 @@ func TestReadSecret_Cached(t *testing.T) {
 	}
 }
 
-func TestReadSecret_Once(t *testing.T) {
+func TestReadSecret_ZeroDuration(t *testing.T) {
 	env := makeTestEnvironment(t)
 
 	if err := env.Store.Write("key", []byte("value")); err != nil {
 		t.Fatalf("Write error: %v", err)
 	}
 
-	data, err := env.Ops.ReadSecret("key", true)
+	data, err := env.Ops.ReadSecret("key", 0)
 	if err != nil {
 		t.Fatalf("ReadSecret error: %v", err)
 	}
@@ -122,9 +123,32 @@ func TestReadSecret_Once(t *testing.T) {
 		t.Error("biometric should have been called")
 	}
 
-	// Auth should NOT be cached with once=true
+	// Auth should NOT be cached with zero duration
 	if env.Cache.IsValid("test-caller", "key") {
-		t.Error("cache should not be valid with once=true")
+		t.Error("cache should not be valid with zero duration")
+	}
+}
+
+func TestReadSecret_CustomDuration(t *testing.T) {
+	var currentTime int64 = 1000
+	env := makeTestEnvironment(t, WithTimeProvider(func() int64 { return currentTime }))
+
+	if err := env.Store.Write("key", []byte("value")); err != nil {
+		t.Fatalf("Write error: %v", err)
+	}
+
+	if _, err := env.Ops.ReadSecret("key", time.Hour); err != nil {
+		t.Fatalf("ReadSecret error: %v", err)
+	}
+
+	currentTime = 1000 + 3600
+	if !env.Cache.IsValid("test-caller", "key") {
+		t.Error("cache should be valid until the requested duration ends")
+	}
+
+	currentTime = 1000 + 3601
+	if env.Cache.IsValid("test-caller", "key") {
+		t.Error("cache should expire after the requested duration")
 	}
 }
 
@@ -136,7 +160,7 @@ func TestReadSecret_BiometricFails(t *testing.T) {
 		t.Fatalf("Write error: %v", err)
 	}
 
-	_, err := env.Ops.ReadSecret("key", false)
+	_, err := env.Ops.ReadSecret("key", DefaultAuthDuration)
 	if err == nil {
 		t.Fatal("expected error when biometric fails")
 	}
@@ -172,7 +196,7 @@ func TestDeleteSecrets(t *testing.T) {
 	if err := env.Store.Write("exists", []byte("v")); err != nil {
 		t.Fatalf("Write error: %v", err)
 	}
-	env.Cache.Update("test-caller", "exists")
+	env.Cache.Update("test-caller", "exists", DefaultAuthDuration)
 
 	results := env.Ops.DeleteSecrets([]string{"exists", "missing"})
 
@@ -216,8 +240,8 @@ func TestResetAll(t *testing.T) {
 func TestClearAuthCache(t *testing.T) {
 	env := makeTestEnvironment(t)
 
-	env.Cache.Update("caller-A", "secret-1")
-	env.Cache.Update("caller-B", "secret-2")
+	env.Cache.Update("caller-A", "secret-1", DefaultAuthDuration)
+	env.Cache.Update("caller-B", "secret-2", DefaultAuthDuration)
 
 	if err := env.Ops.ClearAuthCache(); err != nil {
 		t.Fatalf("ClearAuthCache error: %v", err)
@@ -241,7 +265,7 @@ func TestPrepareExec(t *testing.T) {
 		params, err := env.Ops.PrepareExec(
 			[]string{"DB_PASS=$(db-pass)", "OTHER=unchanged"},
 			[]string{"psql"},
-			false,
+			DefaultAuthDuration,
 		)
 		if err != nil {
 			t.Fatalf("PrepareExec error: %v", err)
@@ -267,7 +291,7 @@ func TestPrepareExec(t *testing.T) {
 		params, err := env.Ops.PrepareExec(
 			[]string{"OTHER=foo"},
 			[]string{"psql", "--password=$(db-pass)"},
-			false,
+			DefaultAuthDuration,
 		)
 		if err != nil {
 			t.Fatalf("PrepareExec error: %v", err)
@@ -287,7 +311,7 @@ func TestPrepareExec(t *testing.T) {
 		params, err := env.Ops.PrepareExec(
 			[]string{"DB_PASS=$(db-pass)"},
 			[]string{"psql", "--password=$(db-pass)"},
-			false,
+			DefaultAuthDuration,
 		)
 		if err != nil {
 			t.Fatalf("PrepareExec error: %v", err)
@@ -307,7 +331,7 @@ func TestPrepareExec(t *testing.T) {
 		_, err := env.Ops.PrepareExec(
 			[]string{"X=$(missing)"},
 			[]string{"cmd"},
-			false,
+			DefaultAuthDuration,
 		)
 		if err == nil {
 			t.Fatal("expected error for missing secret")
@@ -320,7 +344,7 @@ func TestPrepareExec(t *testing.T) {
 		_, err := env.Ops.PrepareExec(
 			[]string{"X=plain-value"},
 			[]string{"cmd"},
-			false,
+			DefaultAuthDuration,
 		)
 		if err == nil {
 			t.Fatal("expected error when no secret references found")
@@ -332,12 +356,12 @@ func TestPrepareExec(t *testing.T) {
 		if err := env.Store.Write("key", []byte("val")); err != nil {
 			t.Fatalf("Write error: %v", err)
 		}
-		env.Cache.Update("test-caller", "key")
+		env.Cache.Update("test-caller", "key", DefaultAuthDuration)
 
 		params, err := env.Ops.PrepareExec(
 			[]string{"K=$(key)"},
 			[]string{"cmd"},
-			false,
+			DefaultAuthDuration,
 		)
 		if err != nil {
 			t.Fatalf("PrepareExec error: %v", err)
@@ -360,7 +384,7 @@ func TestPrepareExec(t *testing.T) {
 		_, err := env.Ops.PrepareExec(
 			[]string{"K=$(key)"},
 			[]string{"cmd"},
-			false,
+			DefaultAuthDuration,
 		)
 		if err == nil {
 			t.Fatal("expected error when biometric fails")
@@ -376,7 +400,7 @@ func TestPrepareExec(t *testing.T) {
 		_, err := env.Ops.PrepareExec(
 			[]string{"B=$(bin)"},
 			[]string{"cmd"},
-			false,
+			DefaultAuthDuration,
 		)
 		if err == nil {
 			t.Fatal("expected error for null bytes")
@@ -392,12 +416,12 @@ func TestPrepareExec(t *testing.T) {
 			t.Fatalf("Write error: %v", err)
 		}
 		// Only cache s1
-		env.Cache.Update("test-caller", "s1")
+		env.Cache.Update("test-caller", "s1", DefaultAuthDuration)
 
 		params, err := env.Ops.PrepareExec(
 			[]string{"A=$(s1)", "B=$(s2)"},
 			[]string{"cmd"},
-			false,
+			DefaultAuthDuration,
 		)
 		if err != nil {
 			t.Fatalf("PrepareExec error: %v", err)
@@ -410,7 +434,7 @@ func TestPrepareExec(t *testing.T) {
 		}
 	})
 
-	t.Run("once skips cache", func(t *testing.T) {
+	t.Run("zero duration skips cache", func(t *testing.T) {
 		env := makeTestEnvironment(t)
 		if err := env.Store.Write("key", []byte("val")); err != nil {
 			t.Fatalf("Write error: %v", err)
@@ -419,7 +443,7 @@ func TestPrepareExec(t *testing.T) {
 		params, err := env.Ops.PrepareExec(
 			[]string{"K=$(key)"},
 			[]string{"cmd"},
-			true,
+			0,
 		)
 		if err != nil {
 			t.Fatalf("PrepareExec error: %v", err)
@@ -431,7 +455,32 @@ func TestPrepareExec(t *testing.T) {
 			t.Errorf("Env[K] = %q, want %q", params.Env["K"], "val")
 		}
 		if env.Cache.IsValid("test-caller", "key") {
-			t.Error("cache should not be valid with once=true")
+			t.Error("cache should not be valid with zero duration")
+		}
+	})
+
+	t.Run("custom duration", func(t *testing.T) {
+		var currentTime int64 = 1000
+		env := makeTestEnvironment(t, WithTimeProvider(func() int64 { return currentTime }))
+		if err := env.Store.Write("key", []byte("val")); err != nil {
+			t.Fatalf("Write error: %v", err)
+		}
+
+		if _, err := env.Ops.PrepareExec(
+			[]string{"K=$(key)"},
+			[]string{"cmd"},
+			30*time.Second,
+		); err != nil {
+			t.Fatalf("PrepareExec error: %v", err)
+		}
+
+		currentTime = 1030
+		if !env.Cache.IsValid("test-caller", "key") {
+			t.Error("cache should be valid until the requested duration ends")
+		}
+		currentTime = 1031
+		if env.Cache.IsValid("test-caller", "key") {
+			t.Error("cache should expire after the requested duration")
 		}
 	})
 
@@ -447,7 +496,7 @@ func TestPrepareExec(t *testing.T) {
 		params, err := env.Ops.PrepareExec(
 			[]string{"DSN=$(user):$(pass)@localhost"},
 			[]string{"cmd"},
-			false,
+			DefaultAuthDuration,
 		)
 		if err != nil {
 			t.Fatalf("PrepareExec error: %v", err)
