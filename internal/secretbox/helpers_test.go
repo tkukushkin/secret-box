@@ -46,6 +46,7 @@ func (m *MockBiometricAuth) Authenticate(reason string) error {
 type TestEnvironment struct {
 	Store     *SecretStore
 	Cache     *AuthCache
+	Log       *AccessLog
 	DB        *SecretDatabase
 	Keychain  *MockKeychain
 	Biometric *MockBiometricAuth
@@ -67,10 +68,12 @@ func makeTestEnvironment(t *testing.T, opts ...interface{}) *TestEnvironment {
 		}
 	}
 	cache := NewAuthCache(db, store.AuthKey, cacheOpts...)
+	accessLog := NewAccessLog(db, WithAccessLogTimeProvider(func() int64 { return cache.TimeProvider() }))
 	bio := &MockBiometricAuth{ShouldSucceed: true}
 	ops := &Operations{
 		Store:     store,
 		Cache:     cache,
+		Log:       accessLog,
 		Biometric: bio,
 		GetCaller: func() CallerIdentity {
 			return CallerIdentity{ID: "test-caller", DisplayName: "TestApp"}
@@ -80,6 +83,7 @@ func makeTestEnvironment(t *testing.T, opts ...interface{}) *TestEnvironment {
 	return &TestEnvironment{
 		Store:     store,
 		Cache:     cache,
+		Log:       accessLog,
 		DB:        db,
 		Keychain:  keychain,
 		Biometric: bio,

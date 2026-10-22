@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 )
 
@@ -133,6 +134,9 @@ func TestDatabase_CreatesSchema(t *testing.T) {
 	}
 	if !hasAuthCache {
 		t.Error("'auth_cache' table should exist")
+	}
+	if !slices.Contains(tables, "access_log") {
+		t.Error("'access_log' table should exist")
 	}
 }
 

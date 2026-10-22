@@ -13,6 +13,7 @@ A macOS CLI tool for secure secret storage with Touch ID authentication.
 - **macOS Keychain integration** — master key stored in the system keychain
 - **Binary data support** — store any data via stdin
 - **Environment variable injection** — run commands with secrets as env vars
+- **Read log** — every secret read is logged with the app, time, and authorization lifetime
 
 ## Installation
 
@@ -109,10 +110,36 @@ DB_PASSWORD='$(db-pass)' secret-box exec --duration 8h -- psql
 is still valid, it keeps its original expiry. Run `secret-box clear-auth-cache` to re-authenticate
 with a different duration.
 
+### View the read log
+
+Every successful `read` and `exec` is logged: when, which secret, which app, whether Touch ID was
+prompted or a cached authorization was used, and until when that authorization is cached.
+
+```bash
+# Last 50 reads
+secret-box log
+
+# Reads of one secret
+secret-box log my-secret
+
+# All entries
+secret-box log -n 0
+```
+
+```
+TIME                 SECRET   APP       AUTH      CACHED UNTIL         CALLER ID
+2026-01-02 10:05:00  api-key  Terminal  Touch ID  not cached           signed:TEAM:com.apple.Terminal
+2026-01-02 10:01:00  db-pass  Terminal  cached    2026-01-02 11:00:00  signed:TEAM:com.apple.Terminal
+2026-01-02 10:00:00  db-pass  Terminal  Touch ID  2026-01-02 11:00:00  signed:TEAM:com.apple.Terminal
+```
+
+`CACHED UNTIL` is the expiry at the time of the read; `clear-auth-cache`, `write` and `delete` may revoke
+the authorization earlier.
+
 ## Data storage
 
 - Master key is stored in macOS Keychain
-- Secrets and auth cache are stored in `~/Library/Application Support/secret-box/db.sqlite3`
+- Secrets, auth cache, and the read log are stored in `~/Library/Application Support/secret-box/db.sqlite3`
 - `secret-box reset` removes all data including the master key
 
 ## Requirements

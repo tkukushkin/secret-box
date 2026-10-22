@@ -105,6 +105,21 @@ func (db *SecretDatabase) setup() (*sql.DB, error) {
 		return nil, fmt.Errorf("failed to migrate auth_cache table: %w", err)
 	}
 
+	if _, err := conn.Exec(`
+		CREATE TABLE IF NOT EXISTS access_log (
+			id INTEGER PRIMARY KEY,
+			timestamp INTEGER NOT NULL,
+			secret_name TEXT NOT NULL,
+			caller_id TEXT NOT NULL,
+			caller_name TEXT NOT NULL,
+			auth TEXT NOT NULL,
+			expires_at INTEGER NOT NULL
+		)
+	`); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("failed to create access_log table: %w", err)
+	}
+
 	return conn, nil
 }
 

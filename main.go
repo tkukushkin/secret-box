@@ -9,8 +9,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"syscall"
+	"text/tabwriter"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -25,9 +27,11 @@ var (
 	keychain       = secretbox.SystemKeychain{}
 	store          = secretbox.NewSecretStore(database, keychain)
 	cache          = secretbox.NewAuthCache(database, store.AuthKey)
+	accessLog      = secretbox.NewAccessLog(database)
 	ops            = &secretbox.Operations{
 		Store:     store,
 		Cache:     cache,
+		Log:       accessLog,
 		Biometric: secretbox.SystemBiometricAuth{},
 		GetCaller: secretbox.CurrentCallerIdentity,
 	}
@@ -55,6 +59,7 @@ func main() {
 		resetCmd(),
 		clearAuthCacheCmd(),
 		execCmd(),
+		logCmd(),
 	)
 
 	if err := rootCmd.Execute(); err != nil {
@@ -288,4 +293,79 @@ Examples:
 	}
 	authDuration = authDurationFlags(cmd)
 	return cmd
+}
+
+func logCmd() *cobra.Command {
+	var limit int
+	cmd := &cobra.Command{
+		Use:   "log [name]",
+		Short: "Show the log of secret reads, newest first.",
+		Long: `Show the log of secret reads, newest first.
+
+Each entry shows when a secret was read, by which app, whether Touch ID was
+prompted or a cached authorization was used, and until when that authorization
+is cached ("not cached" for --once).
+
+Examples:
+  secret-box log
+  secret-box log my-secret
+  secret-box log -n 0`,
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			var name string
+			if len(args) > 0 {
+				name = args[0]
+			}
+			entries, err := ops.AccessLog(name, limit)
+			if err != nil {
+				return err
+			}
+			printAccessLog(os.Stdout, entries, time.Local)
+			return nil
+		},
+	}
+	cmd.Flags().IntVarP(&limit, "limit", "n", 50, "Maximum number of entries to show; 0 shows all.")
+	return cmd
+}
+
+func printAccessLog(w io.Writer, entries []secretbox.AccessLogEntry, loc *time.Location) {
+	if len(entries) == 0 {
+		fmt.Fprintln(w, "No secret reads recorded.")
+		return
+	}
+	const layout = "2006-01-02 15:04:05"
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "TIME\tSECRET\tAPP\tAUTH\tCACHED UNTIL\tCALLER ID")
+	for _, e := range entries {
+		auth := "cached"
+		if e.Auth == secretbox.AuthTouchID {
+			auth = "Touch ID"
+		}
+		expires := "not cached"
+		if e.ExpiresAt != 0 {
+			expires = time.Unix(e.ExpiresAt, 0).In(loc).Format(layout)
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
+			time.Unix(e.Timestamp, 0).In(loc).Format(layout),
+			escapeNonPrintable(e.SecretName),
+			escapeNonPrintable(e.Caller.DisplayName),
+			auth,
+			expires,
+			escapeNonPrintable(e.Caller.ID),
+		)
+	}
+	tw.Flush()
+}
+
+// escapeNonPrintable replaces non-printable characters with Go escape sequences, e.g. "\n" or "\x1b".
+func escapeNonPrintable(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if strconv.IsPrint(r) {
+			b.WriteRune(r)
+		} else {
+			b.WriteString(strings.Trim(strconv.QuoteRune(r), "'"))
+		}
+	}
+	return b.String()
 }

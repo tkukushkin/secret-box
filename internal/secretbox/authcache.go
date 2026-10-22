@@ -33,47 +33,57 @@ func NewAuthCache(db *SecretDatabase, authKeyProvider func() ([]byte, error), op
 }
 
 func (c *AuthCache) IsValid(callerID, secretName string) bool {
+	_, ok := c.Lookup(callerID, secretName)
+	return ok
+}
+
+// Lookup returns the expiry of a valid cached authentication.
+func (c *AuthCache) Lookup(callerID, secretName string) (expiresAt int64, ok bool) {
 	key, err := c.authKeyProvider()
 	if err != nil {
-		return false
+		return 0, false
 	}
 
 	conn, err := c.db.Connection()
 	if err != nil {
-		return false
+		return 0, false
 	}
 
-	var timestamp, expiresAt int64
+	var timestamp int64
 	var storedHMAC []byte
 	err = conn.QueryRow(
 		`SELECT timestamp, expires_at, hmac FROM auth_cache WHERE secret_name = ? AND caller_id = ?`,
 		secretName, callerID,
 	).Scan(&timestamp, &expiresAt, &storedHMAC)
 	if err != nil {
-		return false
+		return 0, false
 	}
 
 	now := c.TimeProvider()
 	if now > expiresAt || timestamp > now {
-		return false
+		return 0, false
 	}
 
 	message := BuildMessage(timestamp, expiresAt, callerID, secretName)
 	expectedHMAC := HMACSHA256(key, message)
 
-	return ConstantTimeEqual(expectedHMAC, storedHMAC)
+	if !ConstantTimeEqual(expectedHMAC, storedHMAC) {
+		return 0, false
+	}
+	return expiresAt, true
 }
 
 // Update records a successful authentication that stays valid for the given duration.
-func (c *AuthCache) Update(callerID, secretName string, duration time.Duration) {
+// It returns the expiry of the stored entry, or 0 if nothing was stored.
+func (c *AuthCache) Update(callerID, secretName string, duration time.Duration) int64 {
 	key, err := c.authKeyProvider()
 	if err != nil {
-		return
+		return 0
 	}
 
 	conn, err := c.db.Connection()
 	if err != nil {
-		return
+		return 0
 	}
 
 	timestamp := c.TimeProvider()
@@ -82,10 +92,13 @@ func (c *AuthCache) Update(callerID, secretName string, duration time.Duration) 
 	message := BuildMessage(timestamp, expiresAt, callerID, secretName)
 	hmacValue := HMACSHA256(key, message)
 
-	_, _ = conn.Exec(
+	if _, err := conn.Exec(
 		`INSERT OR REPLACE INTO auth_cache (secret_name, caller_id, timestamp, expires_at, hmac) VALUES (?, ?, ?, ?, ?)`,
 		secretName, callerID, timestamp, expiresAt, hmacValue,
-	)
+	); err != nil {
+		return 0
+	}
+	return expiresAt
 }
 
 func (c *AuthCache) Invalidate(secretName string) {

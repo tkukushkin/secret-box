@@ -10,6 +10,7 @@ import (
 type Operations struct {
 	Store     *SecretStore
 	Cache     *AuthCache
+	Log       *AccessLog
 	Biometric BiometricAuth
 	GetCaller func() CallerIdentity
 }
@@ -32,17 +33,34 @@ func (o *Operations) ReadSecret(name string, authDuration time.Duration) ([]byte
 
 	caller := o.GetCaller()
 
-	if !o.Cache.IsValid(caller.ID, name) {
+	entry := AccessLogEntry{SecretName: name, Caller: caller, Auth: AuthCached}
+	if expiresAt, ok := o.Cache.Lookup(caller.ID, name); ok {
+		entry.ExpiresAt = expiresAt
+	} else {
 		reason := fmt.Sprintf(`"%s" wants to access "%s"`, caller.DisplayName, name)
 		if err := o.Biometric.Authenticate(reason); err != nil {
 			return nil, err
 		}
+		entry.Auth = AuthTouchID
 		if authDuration > 0 {
-			o.Cache.Update(caller.ID, name, authDuration)
+			entry.ExpiresAt = o.Cache.Update(caller.ID, name, authDuration)
 		}
 	}
 
-	return o.Store.Read(name)
+	data, err := o.Store.Read(name)
+	if err != nil {
+		return nil, err
+	}
+	if err := o.Log.Record(entry); err != nil {
+		return nil, fmt.Errorf("failed to write access log: %w", err)
+	}
+	return data, nil
+}
+
+// AccessLog returns up to limit recorded secret reads, newest first.
+// An empty secretName matches all secrets; a non-positive limit returns all entries.
+func (o *Operations) AccessLog(secretName string, limit int) ([]AccessLogEntry, error) {
+	return o.Log.List(secretName, limit)
 }
 
 // ListSecrets returns all secret names sorted alphabetically.
@@ -124,26 +142,31 @@ func (o *Operations) PrepareExec(environ []string, command []string, authDuratio
 
 	// Check auth cache, collect uncached secrets
 	caller := o.GetCaller()
-	var uncachedSecrets []string
-	for _, name := range secretNames {
-		if !o.Cache.IsValid(caller.ID, name) {
-			uncachedSecrets = append(uncachedSecrets, name)
+	logEntries := make([]AccessLogEntry, len(secretNames))
+	var uncachedSecrets []int
+	for i, name := range secretNames {
+		logEntries[i] = AccessLogEntry{SecretName: name, Caller: caller, Auth: AuthCached}
+		if expiresAt, ok := o.Cache.Lookup(caller.ID, name); ok {
+			logEntries[i].ExpiresAt = expiresAt
+		} else {
+			logEntries[i].Auth = AuthTouchID
+			uncachedSecrets = append(uncachedSecrets, i)
 		}
 	}
 
 	// Single biometric prompt for all uncached secrets
 	if len(uncachedSecrets) > 0 {
 		quoted := make([]string, len(uncachedSecrets))
-		for i, s := range uncachedSecrets {
-			quoted[i] = fmt.Sprintf(`"%s"`, s)
+		for i, idx := range uncachedSecrets {
+			quoted[i] = fmt.Sprintf(`"%s"`, secretNames[idx])
 		}
 		reason := fmt.Sprintf(`"%s" wants to access %s`, caller.DisplayName, strings.Join(quoted, ", "))
 		if err := o.Biometric.Authenticate(reason); err != nil {
 			return nil, err
 		}
 		if authDuration > 0 {
-			for _, secretName := range uncachedSecrets {
-				o.Cache.Update(caller.ID, secretName, authDuration)
+			for _, idx := range uncachedSecrets {
+				logEntries[idx].ExpiresAt = o.Cache.Update(caller.ID, secretNames[idx], authDuration)
 			}
 		}
 	}
@@ -161,6 +184,9 @@ func (o *Operations) PrepareExec(environ []string, command []string, authDuratio
 			}
 		}
 		secrets[name] = string(data)
+	}
+	if err := o.Log.Record(logEntries...); err != nil {
+		return nil, fmt.Errorf("failed to write access log: %w", err)
 	}
 
 	// Expand secret references in env values, collect only modified vars
