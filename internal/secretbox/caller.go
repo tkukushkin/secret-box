@@ -140,6 +140,9 @@ func getSigningIdentity(path string) string {
 type CallerIdentity struct {
 	ID          string
 	DisplayName string
+	// IconPath is the caller's .app bundle (or executable) whose Finder icon
+	// represents it in the Touch ID prompt.
+	IconPath string
 }
 
 // CurrentCallerIdentity walks the process tree to identify the responsible app.
@@ -180,5 +183,14 @@ func CurrentCallerIdentity() CallerIdentity {
 		callerID = "unknown"
 	}
 
-	return CallerIdentity{ID: callerID, DisplayName: displayName}
+	var iconPath string
+	if appPath != "" {
+		if bundle := ExtractAppBundle(appPath); bundle != "" {
+			iconPath = bundle
+		} else {
+			iconPath = appPath
+		}
+	}
+
+	return CallerIdentity{ID: callerID, DisplayName: displayName, IconPath: iconPath}
 }

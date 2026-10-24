@@ -37,8 +37,7 @@ func (o *Operations) ReadSecret(name string, authDuration time.Duration) ([]byte
 	if expiresAt, ok := o.Cache.Lookup(caller.ID, name); ok {
 		entry.ExpiresAt = expiresAt
 	} else {
-		reason := fmt.Sprintf(`"%s" wants to access "%s"`, caller.DisplayName, name)
-		if err := o.Biometric.Authenticate(reason); err != nil {
+		if err := o.Biometric.Authenticate(caller, []string{name}); err != nil {
 			return nil, err
 		}
 		entry.Auth = AuthTouchID
@@ -156,12 +155,11 @@ func (o *Operations) PrepareExec(environ []string, command []string, authDuratio
 
 	// Single biometric prompt for all uncached secrets
 	if len(uncachedSecrets) > 0 {
-		quoted := make([]string, len(uncachedSecrets))
+		names := make([]string, len(uncachedSecrets))
 		for i, idx := range uncachedSecrets {
-			quoted[i] = fmt.Sprintf(`"%s"`, secretNames[idx])
+			names[i] = secretNames[idx]
 		}
-		reason := fmt.Sprintf(`"%s" wants to access %s`, caller.DisplayName, strings.Join(quoted, ", "))
-		if err := o.Biometric.Authenticate(reason); err != nil {
+		if err := o.Biometric.Authenticate(caller, names); err != nil {
 			return nil, err
 		}
 		if authDuration > 0 {

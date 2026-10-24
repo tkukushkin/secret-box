@@ -30,12 +30,14 @@ func (k *MockKeychain) Delete(service, account string) {
 type MockBiometricAuth struct {
 	ShouldSucceed      bool
 	AuthenticateCalled bool
-	LastReason         string
+	LastCaller         CallerIdentity
+	LastSecrets        []string
 }
 
-func (m *MockBiometricAuth) Authenticate(reason string) error {
+func (m *MockBiometricAuth) Authenticate(caller CallerIdentity, secrets []string) error {
 	m.AuthenticateCalled = true
-	m.LastReason = reason
+	m.LastCaller = caller
+	m.LastSecrets = secrets
 	if !m.ShouldSucceed {
 		return &TouchIDError{Message: "Mock auth failed"}
 	}

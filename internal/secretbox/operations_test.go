@@ -2,6 +2,7 @@ package secretbox
 
 import (
 	"errors"
+	"slices"
 	"testing"
 	"time"
 )
@@ -75,8 +76,11 @@ func TestReadSecret_BiometricSuccess(t *testing.T) {
 	if !env.Biometric.AuthenticateCalled {
 		t.Error("biometric should have been called")
 	}
-	if env.Biometric.LastReason != `"TestApp" wants to access "key"` {
-		t.Errorf("reason = %q, want %q", env.Biometric.LastReason, `"TestApp" wants to access "key"`)
+	if env.Biometric.LastCaller.DisplayName != "TestApp" {
+		t.Errorf("caller = %q, want %q", env.Biometric.LastCaller.DisplayName, "TestApp")
+	}
+	if !slices.Equal(env.Biometric.LastSecrets, []string{"key"}) {
+		t.Errorf("secrets = %q, want %q", env.Biometric.LastSecrets, []string{"key"})
 	}
 
 	// Auth should be cached now
@@ -429,8 +433,35 @@ func TestPrepareExec(t *testing.T) {
 		if !env.Biometric.AuthenticateCalled {
 			t.Error("biometric should be called for uncached s2")
 		}
+		if !slices.Equal(env.Biometric.LastSecrets, []string{"s2"}) {
+			t.Errorf("secrets = %q, want %q", env.Biometric.LastSecrets, []string{"s2"})
+		}
+		if env.Biometric.LastCaller.ID != "test-caller" {
+			t.Errorf("caller ID = %q, want %q", env.Biometric.LastCaller.ID, "test-caller")
+		}
 		if params.Env["A"] != "v1" || params.Env["B"] != "v2" {
 			t.Errorf("Env = %v", params.Env)
+		}
+	})
+
+	t.Run("multiple uncached secrets in one prompt", func(t *testing.T) {
+		env := makeTestEnvironment(t)
+		for _, name := range []string{"s1", "s2", "s3"} {
+			if err := env.Store.Write(name, []byte("v")); err != nil {
+				t.Fatalf("Write error: %v", err)
+			}
+		}
+		env.Cache.Update("test-caller", "s2", DefaultAuthDuration)
+
+		if _, err := env.Ops.PrepareExec(
+			[]string{"A=$(s3)", "B=$(s2)"},
+			[]string{"cmd", "$(s1)"},
+			DefaultAuthDuration,
+		); err != nil {
+			t.Fatalf("PrepareExec error: %v", err)
+		}
+		if !slices.Equal(env.Biometric.LastSecrets, []string{"s3", "s1"}) {
+			t.Errorf("secrets = %q, want %q", env.Biometric.LastSecrets, []string{"s3", "s1"})
 		}
 	})
 

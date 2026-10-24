@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"runtime/debug"
 	"strconv"
 	"strings"
@@ -20,6 +21,11 @@ import (
 )
 
 var version = "dev"
+
+// init keeps the main goroutine on the main OS thread, where the AppKit Touch ID prompt must run.
+func init() {
+	runtime.LockOSThread()
+}
 
 var (
 	defaultBaseDir = filepath.Join(userApplicationSupportDir(), "secret-box")

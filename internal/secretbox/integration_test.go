@@ -2,6 +2,7 @@ package secretbox
 
 import (
 	"bytes"
+	"slices"
 	"testing"
 	"time"
 )
@@ -322,19 +323,23 @@ func TestIntegration_MockBiometricAuth(t *testing.T) {
 	mock := &MockBiometricAuth{ShouldSucceed: true}
 
 	// Success case
-	if err := mock.Authenticate("test reason"); err != nil {
+	caller := CallerIdentity{ID: "test-caller", DisplayName: "TestApp"}
+	if err := mock.Authenticate(caller, []string{"s1", "s2"}); err != nil {
 		t.Fatalf("Authenticate error: %v", err)
 	}
 	if !mock.AuthenticateCalled {
 		t.Error("AuthenticateCalled should be true")
 	}
-	if mock.LastReason != "test reason" {
-		t.Errorf("LastReason = %q, want %q", mock.LastReason, "test reason")
+	if mock.LastCaller != caller {
+		t.Errorf("LastCaller = %+v, want %+v", mock.LastCaller, caller)
+	}
+	if !slices.Equal(mock.LastSecrets, []string{"s1", "s2"}) {
+		t.Errorf("LastSecrets = %q, want %q", mock.LastSecrets, []string{"s1", "s2"})
 	}
 
 	// Failure case
 	mock.ShouldSucceed = false
-	err := mock.Authenticate("fail")
+	err := mock.Authenticate(caller, []string{"s1"})
 	if err == nil {
 		t.Fatal("expected error on failed auth")
 	}
